@@ -1,5 +1,7 @@
 # Terra Nova: Freefall
 
+> **About this fork.** This fork aims to rebuild the 3D world with GPU rendering: full colour, with no 256-colour palette, and better particle and weather effects. The original project is [Cyber1on/terranova-freefall](https://github.com/Cyber1on/terranova-freefall).
+
 **Terra Nova: Strike Force Centauri** (Looking Glass Technologies, 1996) for modern Windows, built from a complete decompilation of the game into C.
 
 Freefall is not an emulator and does not need DOSBox. The game's program was turned back into C, function by function, each one checked against the original, and then given a new layer for video, sound and input (SDL3). Everything new is an option: with the **Classic** preset it is the DOS game.
