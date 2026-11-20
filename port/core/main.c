@@ -327,6 +327,8 @@ int main(int argc, char **argv)
             gargv[gargc++] = argv[i];
     }
     gargv[gargc] = 0;
+    for (i = 1; i < gargc; i++)
+        port_log("Game argument: %s\n", gargv[i]);
 
     if (!check && !smooth_test && port_platform_init() != 0)
         return 1;
@@ -551,9 +553,7 @@ int main(int argc, char **argv)
     }
     snprintf(port_bench_path, sizeof port_bench_path, "%s/tnfree-bench.txt", own_dir);
     port_lockstep_init();
-    if (port_smooth_videos && !port_bench)
-        vsmooth_start(0, -1);       /* loads RIFE while the game starts */
-    return port_run(game_main, gargc, gargv);
+    return port_run(game_main, gargc, gargv);   /* (it starts loading RIFE: platform.c) */
 }
 
 /* the credits' first page (src/game/shell/debrief.c shell_2BF760): Freefall's, in the codes of the

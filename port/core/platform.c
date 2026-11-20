@@ -3338,6 +3338,11 @@ int port_run(game_entry fn, int argc, char **argv)
     SDL_HideCursor();
 
     port_input_init();
+    /* RIFE loads while the game starts, but only once the window and its renderer are made: its
+     * thread loading the Vulkan DLLs while this one made the window could deadlock in Windows'
+     * loader (seen under a debugger, which slows every DLL load) */
+    if (port_smooth_videos && !port_bench)
+        vsmooth_start(0, -1);
     {                                   /* the game thread, with a 16 MB stack */
         SDL_PropertiesID props = SDL_CreateProperties();
         SDL_SetPointerProperty(props, SDL_PROP_THREAD_CREATE_ENTRY_FUNCTION_POINTER, (void *)game_thread);

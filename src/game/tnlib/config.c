@@ -589,7 +589,8 @@ int config_parse_cmdline(int argc, char **argv, ConfigSwitchFilter filter)
         } else {
             q = strpbrk(arg, config_cmdline_seps);
             LAUNDER(q);
-            if (*q == 0)                /* NULL: reads address 0 */
+            q = TN_LOWMEM(q);           /* NULL: read address 0 (DOS low memory, 0) */
+            if (*q == 0)
                 continue;
             e = arg;
             while (e < q && !ISSPACE(*e))
