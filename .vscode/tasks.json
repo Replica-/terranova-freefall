@@ -1,0 +1,35 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            // the MSYS2 MINGW32 toolchain (README.md, Building); the launch configurations run it first
+            "label": "build tnfree",
+            "type": "process",
+            "command": "C:\\msys64\\usr\\bin\\bash.exe",
+            "args": [
+                "-lc",
+                "cd \"$(cygpath -u '${workspaceFolder}')\" && cmake --build build"
+            ],
+            "options": {
+                "env": { "MSYSTEM": "MINGW32" }
+            },
+            "group": { "kind": "build", "isDefault": true },
+            "problemMatcher": { "base": "$gcc", "fileLocation": ["relative", "${workspaceFolder}/build"] }
+        },
+        {
+            // a fresh build folder: configure, then build (CMake 4 needs the policy minimum for ncnn)
+            "label": "configure and build tnfree",
+            "type": "process",
+            "command": "C:\\msys64\\usr\\bin\\bash.exe",
+            "args": [
+                "-lc",
+                "cd \"$(cygpath -u '${workspaceFolder}')\" && cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5 && cmake --build build"
+            ],
+            "options": {
+                "env": { "MSYSTEM": "MINGW32" }
+            },
+            "group": "build",
+            "problemMatcher": { "base": "$gcc", "fileLocation": ["relative", "${workspaceFolder}/build"] }
+        }
+    ]
+}

@@ -1,0 +1,170 @@
+{
+    // The game traps integer divides by zero on purpose (port/core/divtrap.c), as the DOS game
+    // did: gdb must pass SIGFPE on to it, or the game stops on the first one and seems frozen.
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Terra Nova: Freefall (debug)",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/tnfree.exe",
+            "preLaunchTask": "build tnfree",
+            "args": [
+                "--game", "D:\\Games\\Terra Nova Strike Force Centauri\\TN",
+                "--cd", "D:\\Games\\Terra Nova Strike Force Centauri\\CD\\TNF108.cue"
+            ],
+            "cwd": "${workspaceFolder}/build",
+            "externalConsole": false,
+            "MIMode": "gdb",
+            "miDebuggerPath": "C:\\msys64\\usr\\bin\\gdb.exe",
+            "symbolLoadInfo": { "loadAll": false, "exceptionList": "tnfree.exe" },
+            "setupCommands": [
+                { "description": "Pass divide traps to the game", "text": "handle SIGFPE nostop noprint pass" }
+            ]
+        },
+        {
+            "name": "Terra Nova: Freefall (start at mission 3)",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/tnfree.exe",
+            "preLaunchTask": "build tnfree",
+            "args": [
+                "--game", "D:\\Games\\Terra Nova Strike Force Centauri\\TN",
+                "--cd", "D:\\Games\\Terra Nova Strike Force Centauri\\CD\\TNF108.cue",
+                "--mission", "3"
+            ],
+            "cwd": "${workspaceFolder}/build",
+            "externalConsole": false,
+            "MIMode": "gdb",
+            "miDebuggerPath": "C:\\msys64\\usr\\bin\\gdb.exe",
+            "symbolLoadInfo": { "loadAll": false, "exceptionList": "tnfree.exe" },
+            "setupCommands": [
+                { "description": "Pass divide traps to the game", "text": "handle SIGFPE nostop noprint pass" }
+            ]
+        },
+        {
+            // no window, no sound: boots to the main menu, saves a screenshot every 3 s to
+            // build/headless/shots and quits after 20 s.  Its own config and saves in build/headless.
+            "name": "Headless: boot to menu (no audio)",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/tnfree.exe",
+            "preLaunchTask": "build tnfree",
+            "args": [
+                "--user", "headless",
+                "--game", "D:\\Games\\Terra Nova Strike Force Centauri\\TN",
+                "--cd", "D:\\Games\\Terra Nova Strike Force Centauri\\CD\\TNF108.cue",
+                "--music", "off"
+            ],
+            "cwd": "${workspaceFolder}/build",
+            "environment": [
+                { "name": "SDL_VIDEO_DRIVER", "value": "offscreen" },
+                { "name": "SDL_AUDIO_DRIVER", "value": "dummy" },
+                { "name": "FREEFALL_SHOT", "value": "headless/shots/menu" },
+                { "name": "FREEFALL_SHOT_EVERY", "value": "3000" },
+                { "name": "FREEFALL_SCRIPT", "value": "3000:kEscape;5000:kEscape;7000:kEscape;9000:kEscape;20000:q" }
+            ],
+            "externalConsole": false,
+            "MIMode": "gdb",
+            "miDebuggerPath": "C:\\msys64\\usr\\bin\\gdb.exe",
+            "symbolLoadInfo": { "loadAll": false, "exceptionList": "tnfree.exe" },
+            "setupCommands": [
+                { "description": "Pass divide traps to the game", "text": "handle SIGFPE nostop noprint pass" }
+            ]
+        },
+        {
+            // no window, no sound: starts a random scenario (docs/PORTING.md), plays 15 s of it with
+            // a screenshot every 5 s to build/headless/shots, then quits
+            "name": "Headless: random scenario mission (no audio)",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/tnfree.exe",
+            "preLaunchTask": "build tnfree",
+            "args": [
+                "--user", "headless",
+                "--game", "D:\\Games\\Terra Nova Strike Force Centauri\\TN",
+                "--cd", "D:\\Games\\Terra Nova Strike Force Centauri\\CD\\TNF108.cue",
+                "--music", "off"
+            ],
+            "cwd": "${workspaceFolder}/build",
+            "environment": [
+                { "name": "SDL_VIDEO_DRIVER", "value": "offscreen" },
+                { "name": "SDL_AUDIO_DRIVER", "value": "dummy" },
+                { "name": "FREEFALL_SHOT", "value": "headless/shots/mission" },
+                { "name": "FREEFALL_SHOT_EVERY", "value": "5000" },
+                { "name": "FREEFALL_SCRIPT", "value": "3000:kEscape;5000:kEscape;7000:kEscape;9000:kEscape;11000:m450,370;11500:c;14000:m320,456;14500:c;18000:m510,444;18500:c;+15000:q" }
+            ],
+            "externalConsole": false,
+            "MIMode": "gdb",
+            "miDebuggerPath": "C:\\msys64\\usr\\bin\\gdb.exe",
+            "symbolLoadInfo": { "loadAll": false, "exceptionList": "tnfree.exe" },
+            "setupCommands": [
+                { "description": "Pass divide traps to the game", "text": "handle SIGFPE nostop noprint pass" }
+            ]
+        },
+        {
+            "name": "Terra Nova: Freefall (check data)",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/tnfree.exe",
+            "preLaunchTask": "build tnfree",
+            "args": [
+                "--game", "D:\\Games\\Terra Nova Strike Force Centauri\\TN",
+                "--check"
+            ],
+            "cwd": "${workspaceFolder}/build",
+            "externalConsole": false,
+            "MIMode": "gdb",
+            "miDebuggerPath": "C:\\msys64\\usr\\bin\\gdb.exe"
+        }
+    ],
+    "inputs": [
+        {
+            "id": "mission",
+            "type": "pickString",
+            "description": "New Game starts the campaign at this mission (campaign order; dist/README.txt)",
+            "default": "9",
+            "options": [
+                { "label": "46  XR-5 Qualification (Standard)", "value": "46" },
+                { "label": "47  Combat Certification (Standard)", "value": "47" },
+                { "label": "37  Operation Cannonball (Standard)", "value": "37" },
+                { "label": "38  Operation Panama (Standard)", "value": "38" },
+                { "label": " 1  Operation Eagle Eye (Scout)", "value": "1" },
+                { "label": " 2  Operation Sherwood (Standard)", "value": "2" },
+                { "label": " 3  Operation Seagull (Standard)", "value": "3" },
+                { "label": " 4  Operation Eagle's Roost (Standard)", "value": "4" },
+                { "label": " 5  Operation Valkyrie (Standard)", "value": "5" },
+                { "label": " 6  Operation Eagle's Nest (Standard)", "value": "6" },
+                { "label": " 7  Operation Mariner (Standard)", "value": "7" },
+                { "label": " 8  Operation Periscope (Scout)", "value": "8" },
+                { "label": " 9  Operation Ivanhoe (Heavy)", "value": "9" },
+                { "label": "32  Operation Meteor (Standard)", "value": "32" },
+                { "label": "33  Operation Meteorite (Standard)", "value": "33" },
+                { "label": "10  Operation Oilslick (Heavy)", "value": "10" },
+                { "label": "11  Operation Market Square (Standard)", "value": "11" },
+                { "label": "12  Operation Eggshell (Standard)", "value": "12" },
+                { "label": "13  Operation Conductor (Standard)", "value": "13" },
+                { "label": "34  Operation Meteor Shower (Heavy)", "value": "34" },
+                { "label": "29  Operation Goblin (Standard)", "value": "29" },
+                { "label": "15  Operation Undertow (Standard)", "value": "15" },
+                { "label": "17  Operation Ivy (Standard)", "value": "17" },
+                { "label": "16  Operation Seraphim (Heavy)", "value": "16" },
+                { "label": "36  Operation Cropduster (Heavy)", "value": "36" },
+                { "label": "14  Operation Mercury (Standard)", "value": "14" },
+                { "label": "20  Operation Black Widow (Standard)", "value": "20" },
+                { "label": "39  Operation Cold War (Pirate)", "value": "39" },
+                { "label": "21  Operation Aegis (Heavy)", "value": "21" },
+                { "label": "35  Operation Buzzard (Heavy)", "value": "35" },
+                { "label": "22  Operation Sparkplug (Heavy)", "value": "22" },
+                { "label": "23  Operation Cadmium (Heavy)", "value": "23" },
+                { "label": "19  Operation Bloodline (Heavy)", "value": "19" },
+                { "label": "24  Operation Fusebox (Heavy)", "value": "24" },
+                { "label": "27  Operation Calais (Heavy)", "value": "27" },
+                { "label": "25  Operation Pigpen (Heavy)", "value": "25" },
+                { "label": "26  Operation Hyperbole (Heavy)", "value": "26" },
+                { "label": "30  Operation Icepick (Heavy)", "value": "30" },
+                { "label": "31  Operation Absolute Zero (Heavy)", "value": "31" }
+            ]
+        }
+    ]
+}
