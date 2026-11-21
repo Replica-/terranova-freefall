@@ -994,8 +994,9 @@ typedef struct {
 
 /* the GPU ground (gpuland.c): the view's pixels that show the ground keep their colour, with the
  * alpha PORT_GL_MARK_A (the card's ground goes there; where the card drew nothing, the colour) */
-#define PORT_GL_MARK(c, k) (((c) & 0x00FFFFFFu) | ((uint32_t)(PORT_GL_MARK_A + 1 - (k)) << 24))
-#define GL_PICK(k, c) ((k) ? PORT_GL_MARK(c, k) : (c))  /* k: the mask's (1 the ground, 2 an object) */
+#define PORT_GL_MARK(c, k) (((c) & 0x00FFFFFFu) | ((uint32_t)(PORT_GL_MARK_A + 1 - ((k) & 3) - ((k) & 4 ? 3 : 0)) << 24))
+#define GL_PICK(k, c) ((k) ? PORT_GL_MARK(c, k) : (c))  /* k: the mask's (1 the ground, 2 an object; 4 an
+                                                       * effect over it) */
 
 /* the GPU ground (gpuland.c): a view's picture made with its mark where the ground goes,
  * drawn with the card's ground put there; the picture's rows are the card picture's from row oy

@@ -30,6 +30,8 @@
 #include "shaders/gpuwx.dxil.h"
 #include "shaders/gpuobj_vert.dxil.h"
 #include "shaders/gpuobj.dxil.h"
+#include "shaders/gpufx_vert.dxil.h"
+#include "shaders/gpufx.dxil.h"
 
 void port_log(const char *fmt, ...);
 
@@ -38,6 +40,11 @@ int port_gl_capturing;
 uint16_t *port_gl_sh;
 uint16_t port_gl_sh_val = 0x100;
 uint16_t *port_gl_shc;
+uint16_t *port_gl_fxsh;
+static uint16_t *fxsh_buf;              /* the effects' shadow (port_gl_fx's callers), as sh_buf */
+static size_t fxsh_n;
+static int fx_used;                     /* (cleared on its first use in a drawing) */
+static volatile int fx_ready;           /* the card draws the effects: their callers may leave them out */
 const uint8_t *port_gl_sh_base;
 static uint16_t *sh_buf;                /* the shadow of the canvas (the game's thread) */
 static size_t sh_n;
@@ -52,6 +59,17 @@ static size_t sh_n;
 #define OTEX_MAX 192                    /* objects' textures in one picture */
 #define OTEX_DIM 256                    /* ... at most this wide and high (a bigger one stays the game's) */
 #define OPOOL (4 << 20)                 /* ... their texels a picture, at most */
+#define FX_MAX 160                      /* effects pack pictures kept on the card (the last used) */
+#define FX_DIM 256                      /* ... at most this wide and high (a bigger one stays the game's) */
+#define FXS_MAX 768                     /* effects in one picture */
+
+/* an effects pack picture where the game placed it (port_gl_fx) */
+typedef struct {
+    const uint8_t *rgba;
+    const void *key;
+    int w, h, mirror, lit;
+    float x0, y0, x1, y1, op, fit[6];
+} FxSprite;
 #define MIP_BYTES (4 * (64 * 64 + 32 * 32 + 16 * 16 + 8 * 8 + 4 * 4 + 2 * 2 + 1))
 #define FIT_BYTES (2 * 24 * 16)
 
@@ -81,6 +99,8 @@ typedef struct {
     float wx_density, wx_wind, wx_time, cam_x, cam_y;
     int fog, fog_colour;                /* the fog for each pixel (port_gl_view) */
     float fog_start, fog_end, m[9], mz[3];
+    FxSprite fx[FXS_MAX];               /* the effects, in the order drawn */
+    int nfx;
     GpuObjVert *ov;                     /* the objects' triangles, in the order drawn */
     size_t onv, ocap;
     int notex;
@@ -145,6 +165,13 @@ void port_gl_begin(void **slot, const uint8_t *canvas, int W, int H, long half_w
     c->ntex = c->nlt = 0;
     c->onv = 0;
     c->notex = 0;
+    c->nfx = 0;
+    fx_used = 0;
+    if (n > fxsh_n) {                   /* the effects' shadow */
+        free(fxsh_buf);
+        fxsh_buf = malloc(n * sizeof *fxsh_buf);
+        fxsh_n = fxsh_buf ? n : 0;
+    }
     c->opool_used = 0;
     c->fog = 0;
     c->wx_kind = -1;
@@ -153,6 +180,7 @@ void port_gl_begin(void **slot, const uint8_t *canvas, int W, int H, long half_w
     cur = c;
     port_gl_capturing = 1;
     port_gl_shc = sh_buf;
+    port_gl_fxsh = NULL;                /* (port_gl_fx gives it, cleared, on the drawing's first effect) */
 }
 
 void port_gl_view(const float m[9], const float mz[3], int fog, float start, float end, int colour)
@@ -180,6 +208,35 @@ void port_gl_weather(int kind, int colour, float density, float wind, float time
     c->wx_time = time;
     c->cam_x = cam_x;
     c->cam_y = cam_y;
+}
+
+int port_gl_fx(const uint8_t *rgba, int w, int h, const void *key, float x0, float y0, float x1, float y1,
+               int mirror, float op, const float *fit)
+{
+    Capture *c = cur;
+    FxSprite *f;
+    if (!c || !fx_ready || !rgba || !fxsh_buf || w <= 0 || h <= 0 || w > FX_DIM || h > FX_DIM || c->nfx == FXS_MAX)
+        return 0;
+    if (!fx_used) {
+        memset(fxsh_buf, 0, (size_t)c->W * c->H * sizeof *fxsh_buf);
+        fx_used = 1;
+    }
+    port_gl_fxsh = fxsh_buf;
+    f = &c->fx[c->nfx++];
+    f->rgba = rgba;
+    f->key = key;
+    f->w = w;
+    f->h = h;
+    f->mirror = mirror;
+    f->x0 = x0;
+    f->y0 = y0;
+    f->x1 = x1;
+    f->y1 = y1;
+    f->op = op;
+    f->lit = fit != NULL;
+    if (fit)
+        memcpy(f->fit, fit, sizeof f->fit);
+    return 1;
 }
 
 int port_gl_obj_canvas(const void *bits)
@@ -274,10 +331,15 @@ void port_gl_end(void)
         return;
     port_gl_sh = NULL;
     port_gl_shc = NULL;
+    port_gl_fxsh = NULL;
     if (c->mask) {                      /* the ground: drawn by the terrain, not drawn over since */
         size_t i, n = (size_t)c->W * c->H;
         for (i = 0; i < n; i++)
             c->mask[i] = (sh_buf[i] & 0x300) && (uint8_t)sh_buf[i] == c->canvas[i] ? (uint8_t)(sh_buf[i] >> 8 & 3) : 0;
+        if (fx_used)                    /* an effect over it: nothing drawn there since (4) */
+            for (i = 0; i < n; i++)
+                if ((fxsh_buf[i] & 0x100) && (uint8_t)fxsh_buf[i] == c->canvas[i])
+                    c->mask[i] |= 4;
     }
     c->serial = ++serial;
     port_gl_capturing = 0;
@@ -382,6 +444,13 @@ static SDL_GPUGraphicsPipeline *obj_pipe;  /* the objects (gpuobj shaders) */
 static SDL_GPUTexture *otex, *obj_tex;  /* ... their textures (256 x 256 slots), their layer */
 static SDL_GPUBuffer *obuf;
 static Uint32 obuf_size;
+static SDL_GPUGraphicsPipeline *fx_pipe;   /* the effects pack's pictures (gpufx shaders) */
+static SDL_GPUTexture *fx_pics, *fx_tex;   /* ... kept pictures (FX_DIM slots), their layer */
+static SDL_GPUSampler *linclamp;
+static SDL_GPUBuffer *fxbuf;
+static Uint32 fxbuf_size;
+static const void *fx_key[FX_MAX];      /* the pictures in the slots, when each was last used */
+static unsigned fx_age[FX_MAX], fx_clock;
 static SDL_GPUSampler *point;
 static SDL_GPUTexture *texels, *ltabs, *paltex, *color, *depth;
 static SDL_GPUTexture *colours, *fits;  /* the textures in colour (mipmapped), the rows' fits */
@@ -399,16 +468,28 @@ static SDL_GPURenderState *mix;         /* the ground put into the picture (port
 static SDL_GPUShader *mix_sh;
 static SDL_GPUTexture *mix_for;         /* ... the colour target it was made with */
 
+/* GPU rendering cannot go on with this renderer: the game draws everything again (the weather's
+ * drops, the effects) */
+static void gl_off(void)
+{
+    broken = 1;
+    port_gl_wx_on = 0;
+    fx_ready = 0;
+}
+
 static void forget(void)
 {
     /* the renderer (and with it its device and textures) is gone or new: start again */
     g_r = NULL;
     dev = NULL;
-    pipe = wx_pipe = obj_pipe = NULL;
-    wx_tex = otex = obj_tex = NULL;
-    obuf = NULL;
-    obuf_size = 0;
+    pipe = wx_pipe = obj_pipe = fx_pipe = NULL;
+    wx_tex = otex = obj_tex = fx_pics = fx_tex = NULL;
+    linclamp = NULL;
+    obuf = fxbuf = NULL;
+    obuf_size = fxbuf_size = 0;
+    memset(fx_key, 0, sizeof fx_key);
     port_gl_wx_on = 0;
+    fx_ready = 0;
     point = trilin = NULL;
     texels = ltabs = paltex = color = depth = colours = fits = NULL;
     vbuf = NULL;
@@ -445,6 +526,16 @@ void port_gl_shutdown(void)
             SDL_ReleaseGPUTexture(dev, obj_tex);
         if (obuf)
             SDL_ReleaseGPUBuffer(dev, obuf);
+        if (fx_pipe)
+            SDL_ReleaseGPUGraphicsPipeline(dev, fx_pipe);
+        if (fx_pics)
+            SDL_ReleaseGPUTexture(dev, fx_pics);
+        if (fx_tex)
+            SDL_ReleaseGPUTexture(dev, fx_tex);
+        if (linclamp)
+            SDL_ReleaseGPUSampler(dev, linclamp);
+        if (fxbuf)
+            SDL_ReleaseGPUBuffer(dev, fxbuf);
         if (point)
             SDL_ReleaseGPUSampler(dev, point);
         if (trilin)
@@ -647,6 +738,67 @@ static int setup(SDL_Renderer *r)
         otex = make_tex(SDL_GPU_TEXTURETYPE_2D_ARRAY, SDL_GPU_TEXTUREFORMAT_R8_UNORM, SDL_GPU_TEXTUREUSAGE_SAMPLER,
                         OTEX_DIM, OTEX_DIM, OTEX_MAX, 1);
     }
+    {   /* the effects: four attributes, premultiplied over each other in the game's order */
+        SDL_GPUShader *fvs, *ffs;
+        SDL_GPUGraphicsPipelineCreateInfo fi = pi;
+        SDL_GPUVertexBufferDescription fvb = vb;
+        SDL_GPUVertexAttribute fva[4];
+        SDL_GPUColorTargetDescription fct = ct;
+        SDL_GPUSamplerCreateInfo lsi;
+        int k;
+        SDL_zero(si);
+        si.format = SDL_GPU_SHADERFORMAT_DXIL;
+        si.entrypoint = "main";
+        si.code = gpufx_vert_dxil;
+        si.code_size = gpufx_vert_dxil_len;
+        si.stage = SDL_GPU_SHADERSTAGE_VERTEX;
+        si.num_uniform_buffers = 1;
+        fvs = SDL_CreateGPUShader(dev, &si);
+        SDL_zero(si);
+        si.format = SDL_GPU_SHADERFORMAT_DXIL;
+        si.entrypoint = "main";
+        si.code = gpufx_dxil;
+        si.code_size = gpufx_dxil_len;
+        si.stage = SDL_GPU_SHADERSTAGE_FRAGMENT;
+        si.num_samplers = 1;
+        ffs = SDL_CreateGPUShader(dev, &si);
+        fvb.pitch = 64;
+        for (k = 0; k < 4; k++) {
+            fva[k] = va[0];
+            fva[k].location = (Uint32)k;
+            fva[k].offset = (Uint32)(16 * k);
+        }
+        fct.blend_state.enable_blend = true;
+        fct.blend_state.src_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE;
+        fct.blend_state.dst_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+        fct.blend_state.color_blend_op = SDL_GPU_BLENDOP_ADD;
+        fct.blend_state.src_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE;
+        fct.blend_state.dst_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+        fct.blend_state.alpha_blend_op = SDL_GPU_BLENDOP_ADD;
+        fi.vertex_shader = fvs;
+        fi.fragment_shader = ffs;
+        fi.vertex_input_state.vertex_buffer_descriptions = &fvb;
+        fi.vertex_input_state.vertex_attributes = fva;
+        fi.vertex_input_state.num_vertex_attributes = 4;
+        fi.target_info.color_target_descriptions = &fct;
+        fi.depth_stencil_state.enable_depth_test = false;
+        fi.depth_stencil_state.enable_depth_write = false;
+        fi.target_info.has_depth_stencil_target = false;
+        fi.target_info.depth_stencil_format = SDL_GPU_TEXTUREFORMAT_INVALID;
+        fx_pipe = fvs && ffs ? SDL_CreateGPUGraphicsPipeline(dev, &fi) : NULL;
+        if (fvs)
+            SDL_ReleaseGPUShader(dev, fvs);
+        if (ffs)
+            SDL_ReleaseGPUShader(dev, ffs);
+        fx_pics = make_tex(SDL_GPU_TEXTURETYPE_2D_ARRAY, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, SDL_GPU_TEXTUREUSAGE_SAMPLER,
+                           FX_DIM, FX_DIM, FX_MAX, 1);
+        SDL_zero(lsi);
+        lsi.min_filter = lsi.mag_filter = SDL_GPU_FILTER_LINEAR;
+        lsi.mipmap_mode = SDL_GPU_SAMPLERMIPMAPMODE_NEAREST;
+        lsi.address_mode_u = lsi.address_mode_v = lsi.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+        linclamp = SDL_CreateGPUSampler(dev, &lsi);
+        memset(fx_key, 0, sizeof fx_key);
+    }
     if (!pipe) {
         port_log("GPU ground: pipeline not made (%s), off\n", SDL_GetError());
         return 0;
@@ -676,6 +828,7 @@ static int setup(SDL_Renderer *r)
         return 0;
     }
     port_gl_wx_on = wx_pipe != NULL;
+    fx_ready = fx_pipe && fx_pics && linclamp;
     port_log("GPU rendering: on (%s, depth %s, texture filter %s, weather %s)\n", SDL_GetGPUDeviceDriver(dev),
              depth_fmt == SDL_GPU_TEXTUREFORMAT_D32_FLOAT ? "32-bit float" : "24-bit", filter ? "on" : "off",
              wx_pipe ? "on" : "the game's");
@@ -699,6 +852,8 @@ static int targets(int W, int H)
         SDL_ReleaseGPUTexture(dev, wx_tex);
     if (obj_tex)
         SDL_ReleaseGPUTexture(dev, obj_tex);
+    if (fx_tex)
+        SDL_ReleaseGPUTexture(dev, fx_tex);
     shown = NULL;
     color = make_tex(SDL_GPU_TEXTURETYPE_2D, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
                      SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER, W, H, 1, 1);
@@ -707,7 +862,9 @@ static int targets(int W, int H)
                       SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER, W, H, 1, 1);
     obj_tex = make_tex(SDL_GPU_TEXTURETYPE_2D, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
                        SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER, W, H, 1, 1);
-    if (!color || !depth || !wx_tex || !obj_tex)
+    fx_tex = make_tex(SDL_GPU_TEXTURETYPE_2D, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
+                      SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER, W, H, 1, 1);
+    if (!color || !depth || !wx_tex || !obj_tex || !fx_tex)
         return 0;
     p = SDL_CreateProperties();
     SDL_SetNumberProperty(p, SDL_PROP_TEXTURE_CREATE_FORMAT_NUMBER, SDL_PIXELFORMAT_ABGR8888);
@@ -886,10 +1043,127 @@ static void weather_pass(SDL_GPUCommandBuffer *cmd, const Capture *c, const floa
     SDL_EndGPURenderPass(wp);
 }
 
+/* the effects (port_gl_fx): each picture's slot on the card, uploading the ones it lacks (the
+ * slot used longest ago makes room; not one this picture uses: then the effect is left out) */
+static int fx_slot[FXS_MAX];
+static int fx_new[FXS_MAX], fx_nnew;
+
+static Uint32 fx_prepare(const Capture *c)
+{
+    Uint32 bytes = 0;
+    int i, k;
+    fx_clock++;
+    fx_nnew = 0;
+    for (i = 0; i < c->nfx; i++) {
+        const FxSprite *f = &c->fx[i];
+        int best = -1;
+        for (k = 0; k < FX_MAX; k++)
+            if (fx_key[k] == f->key)
+                break;
+        if (k == FX_MAX) {
+            for (k = 0; k < FX_MAX; k++)
+                if (fx_age[k] != fx_clock && (best < 0 || !fx_key[k] || fx_age[k] < fx_age[best]))
+                    best = k;
+            k = best;
+            if (k >= 0) {
+                fx_key[k] = f->key;
+                fx_new[fx_nnew++] = i;
+                bytes += (Uint32)f->w * f->h * 4;
+            }
+        }
+        fx_slot[i] = k;
+        if (k >= 0)
+            fx_age[k] = fx_clock;
+    }
+    return bytes + (Uint32)c->nfx * 6 * 64;
+}
+
+/* their new pictures and their rectangles into the transfer buffer at m */
+static void fx_fill(const Capture *c, uint8_t *m)
+{
+    int i, j;
+    float *v;
+    for (i = 0; i < fx_nnew; i++) {
+        const FxSprite *f = &c->fx[fx_new[i]];
+        memcpy(m, f->rgba, (size_t)f->w * f->h * 4);
+        m += (size_t)f->w * f->h * 4;
+    }
+    v = (float *)m;
+    for (i = 0; i < c->nfx; i++) {
+        const FxSprite *f = &c->fx[i];
+        static const float q[6][2] = { { 0, 0 }, { 1, 0 }, { 1, 1 }, { 0, 0 }, { 1, 1 }, { 0, 1 } };
+        float us = (float)f->w / FX_DIM, vs = (float)f->h / FX_DIM;
+        for (j = 0; j < 6; j++, v += 16) {
+            float qx = q[j][0], qy = q[j][1];
+            memset(v, 0, 16 * sizeof *v);
+            if (fx_slot[i] < 0)         /* (no slot: left out, off the canvas) */
+                continue;
+            v[0] = f->x0 + (f->x1 - f->x0) * qx;
+            v[1] = f->y0 + (f->y1 - f->y0) * qy;
+            v[2] = (float)fx_slot[i];
+            v[4] = (f->mirror ? 1 - qx : qx) * us;
+            v[5] = qy * vs;
+            v[8] = f->fit[0];
+            v[9] = f->fit[1];
+            v[10] = f->fit[2];
+            v[11] = f->op;
+            v[12] = f->fit[3];
+            v[13] = f->fit[4];
+            v[14] = f->fit[5];
+            v[15] = (float)f->lit;
+        }
+    }
+}
+
+static void fx_upload(const Capture *c, SDL_GPUCopyPass *cp, Uint32 off)
+{
+    int i;
+    for (i = 0; i < fx_nnew; i++) {
+        const FxSprite *f = &c->fx[fx_new[i]];
+        SDL_GPUTextureTransferInfo src = { tbuf, off, (Uint32)f->w, (Uint32)f->h };
+        SDL_GPUTextureRegion dst;
+        SDL_zero(dst);
+        dst.texture = fx_pics;
+        dst.layer = (Uint32)fx_slot[fx_new[i]];
+        dst.w = (Uint32)f->w;
+        dst.h = (Uint32)f->h;
+        dst.d = 1;
+        SDL_UploadToGPUTexture(cp, &src, &dst, false);
+        off += (Uint32)f->w * f->h * 4;
+    }
+    if (c->nfx) {
+        SDL_GPUTransferBufferLocation src = { tbuf, off };
+        SDL_GPUBufferRegion dst = { fxbuf, 0, (Uint32)c->nfx * 6 * 64 };
+        SDL_UploadToGPUBuffer(cp, &src, &dst, true);
+    }
+}
+
+static void fx_pass(SDL_GPUCommandBuffer *cmd, const Capture *c)
+{
+    SDL_GPUColorTargetInfo ti;
+    SDL_GPURenderPass *rp;
+    SDL_zero(ti);
+    ti.texture = fx_tex;
+    ti.load_op = SDL_GPU_LOADOP_CLEAR;
+    ti.store_op = SDL_GPU_STOREOP_STORE;
+    rp = SDL_BeginGPURenderPass(cmd, &ti, 1, NULL);
+    if (fx_pipe && fx_pics && linclamp && c->nfx) {
+        SDL_GPUTextureSamplerBinding sb = { fx_pics, linclamp };
+        SDL_GPUBufferBinding bb = { fxbuf, 0 };
+        float size[4] = { (float)c->W, (float)c->H, 0, 0 };
+        SDL_BindGPUGraphicsPipeline(rp, fx_pipe);
+        SDL_BindGPUVertexBuffers(rp, 0, &bb, 1);
+        SDL_BindGPUFragmentSamplers(rp, 0, &sb, 1);
+        SDL_PushGPUVertexUniformData(cmd, 0, size, sizeof size);
+        SDL_DrawGPUPrimitives(rp, (Uint32)c->nfx * 6, 1, 0, 0);
+    }
+    SDL_EndGPURenderPass(rp);
+}
+
 SDL_Texture *port_gl_render(SDL_Renderer *r, void *capture, const uint32_t *pal)
 {
     Capture *c = capture;
-    Uint32 vbytes, tbytes, off, obytes, ooff;
+    Uint32 vbytes, tbytes, off, obytes, ooff, fxbytes;
     uint8_t *m;
     SDL_GPUCommandBuffer *cmd;
     SDL_GPUCopyPass *cp;
@@ -906,7 +1180,7 @@ SDL_Texture *port_gl_render(SDL_Renderer *r, void *capture, const uint32_t *pal)
     if (r != g_r) {                     /* a new renderer: its device's things are gone with the old */
         forget();
         if (!setup(r)) {
-            broken = 1;
+            gl_off();
             return NULL;
         }
     }
@@ -918,8 +1192,21 @@ SDL_Texture *port_gl_render(SDL_Renderer *r, void *capture, const uint32_t *pal)
 
     vbytes = (Uint32)(c->nv * sizeof(GpuVert));
     obytes = (Uint32)(c->onv * sizeof(GpuObjVert));
+    fxbytes = fx_prepare(c);
     tbytes = (Uint32)c->ntex * (TEX_SIZE + MIP_BYTES) + (Uint32)c->nlt * (LT_SIZE + FIT_BYTES) + 1024 + vbytes +
-             (Uint32)c->opool_used + obytes;
+             (Uint32)c->opool_used + obytes + fxbytes;
+    if ((Uint32)c->nfx * 6 * 64 > fxbuf_size) {     /* the effects' rectangles */
+        SDL_GPUBufferCreateInfo bi;
+        if (fxbuf)
+            SDL_ReleaseGPUBuffer(dev, fxbuf);
+        SDL_zero(bi);
+        bi.usage = SDL_GPU_BUFFERUSAGE_VERTEX;
+        bi.size = (Uint32)FXS_MAX * 6 * 64;
+        fxbuf = SDL_CreateGPUBuffer(dev, &bi);
+        fxbuf_size = fxbuf ? bi.size : 0;
+        if (!fxbuf)
+            return NULL;
+    }
     if (obytes > obuf_size) {           /* the objects' vertices */
         SDL_GPUBufferCreateInfo bi;
         if (obuf)
@@ -968,6 +1255,7 @@ SDL_Texture *port_gl_render(SDL_Renderer *r, void *capture, const uint32_t *pal)
     ooff = off + (Uint32)c->nlt * FIT_BYTES;    /* the objects' texels, then their vertices */
     memcpy(m + ooff, c->opool, c->opool_used);
     memcpy(m + ooff + c->opool_used, c->ov, obytes);
+    fx_fill(c, m + ooff + c->opool_used + obytes);
     SDL_UnmapGPUTransferBuffer(dev, tbuf);
 
     cmd = SDL_AcquireGPUCommandBuffer(dev);
@@ -1046,6 +1334,7 @@ SDL_Texture *port_gl_render(SDL_Renderer *r, void *capture, const uint32_t *pal)
         SDL_GPUBufferRegion dst = { obuf, 0, obytes };
         SDL_UploadToGPUBuffer(cp, &src, &dst, true);
     }
+    fx_upload(c, cp, ooff + (Uint32)c->opool_used + obytes);
     for (i = 0; i < c->nlt; i++) {
         SDL_GPUTextureTransferInfo src = { tbuf, off + (Uint32)i * FIT_BYTES, 2, 24 };
         SDL_GPUTextureRegion dst;
@@ -1163,17 +1452,22 @@ SDL_Texture *port_gl_render(SDL_Renderer *r, void *capture, const uint32_t *pal)
         }
         SDL_EndGPURenderPass(op);
     }
+    fx_pass(cmd, c);
     weather_pass(cmd, c, cam, pal);
     if (!SDL_SubmitGPUCommandBuffer(cmd))
         return NULL;
     {
-        static int told;
-        if (told < 2 && c->nv && (told == 0 || c->onv) && ++told)  /* (the first picture, the first with objects) */
+        static int told;                /* (the first picture, then the first with objects, with effects) */
+        int now = (c->nv ? 1 : 0) | (c->onv ? 2 : 0) | (c->nfx ? 4 : 0);
+        if ((now & ~told) && c->nv) {
+            told |= now;
             port_log("GPU rendering: picture %dx%d, ground %lu triangles, %d textures; objects %lu triangles, "
-                     "%d textures; %d light tables, %lu dropped; fog %s (%.0f to %.0f squares, colour %d = %06X)\n",
-                     c->W, c->H, (unsigned long)(c->nv / 3), c->ntex, (unsigned long)(c->onv / 3), c->notex, c->nlt,
-                     c->dropped, c->fog ? "on" : "off", c->fog_start, c->fog_end, c->fog_colour,
+                     "%d textures; effects %d (%d new); %d light tables, %lu dropped; fog %s (%.0f to %.0f squares, "
+                     "colour %d = %06X)\n",
+                     c->W, c->H, (unsigned long)(c->nv / 3), c->ntex, (unsigned long)(c->onv / 3), c->notex, c->nfx,
+                     fx_nnew, c->nlt, c->dropped, c->fog ? "on" : "off", c->fog_start, c->fog_end, c->fog_colour,
                      (unsigned)(pal[c->fog_colour & 0xFF] & 0xFFFFFF));
+        }
     }
     return shown;
 }
@@ -1189,7 +1483,7 @@ const uint8_t *port_gl_mask(void *capture, int row)
 SDL_GPURenderState *port_gl_state(SDL_Renderer *r, float sx, float sy, float oy, float a)
 {
     float map[4];
-    if (!port_gl || broken || r != g_r || !color || !wx_tex || !obj_tex)
+    if (!port_gl || broken || r != g_r || !color || !wx_tex || !obj_tex || !fx_tex)
         return NULL;
     if (mix && mix_for != color) {      /* a new picture size: made again with the new target */
         SDL_DestroyGPURenderState(mix);
@@ -1197,7 +1491,7 @@ SDL_GPURenderState *port_gl_state(SDL_Renderer *r, float sx, float sy, float oy,
     }
     if (!mix) {
         SDL_GPURenderStateCreateInfo ri;
-        SDL_GPUTextureSamplerBinding sb[3];
+        SDL_GPUTextureSamplerBinding sb[4];
         if (!mix_sh) {
             SDL_GPUShaderCreateInfo si;
             SDL_zero(si);
@@ -1206,12 +1500,12 @@ SDL_GPURenderState *port_gl_state(SDL_Renderer *r, float sx, float sy, float oy,
             si.code = gpuland_mix_dxil;
             si.code_size = gpuland_mix_dxil_len;
             si.stage = SDL_GPU_SHADERSTAGE_FRAGMENT;
-            si.num_samplers = 4;
+            si.num_samplers = 5;
             si.num_uniform_buffers = 1;
             mix_sh = SDL_CreateGPUShader(dev, &si);
             if (!mix_sh) {
                 port_log("GPU ground: the mixing shader not made (%s), off\n", SDL_GetError());
-                broken = 1;
+                gl_off();
                 return NULL;
             }
         }
@@ -1221,14 +1515,16 @@ SDL_GPURenderState *port_gl_state(SDL_Renderer *r, float sx, float sy, float oy,
         sb[1].sampler = point;
         sb[2].texture = obj_tex;
         sb[2].sampler = point;
+        sb[3].texture = fx_tex;
+        sb[3].sampler = point;
         SDL_zero(ri);
         ri.fragment_shader = mix_sh;
-        ri.num_sampler_bindings = 3;
+        ri.num_sampler_bindings = 4;
         ri.sampler_bindings = sb;
         mix = SDL_CreateGPURenderState(r, &ri);
         if (!mix) {
             port_log("GPU ground: the mixing state not made (%s), off\n", SDL_GetError());
-            broken = 1;
+            gl_off();
             return NULL;
         }
         mix_for = color;

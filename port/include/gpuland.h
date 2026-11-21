@@ -60,6 +60,15 @@ void port_gl_obj(const PortGlObjVert *v, int n, const uint8_t *bits, int w, int 
 /* ... drawing into the sharp canvas (not a picture of its own: the water's reflections) */
 int port_gl_obj_canvas(const void *bits);
 
+/* the game's thread (port/mods/effects.c): an effects pack's picture (w x h RGBA, key: the same
+ * picture's) where the game places the sprite on the sharp canvas (x0, y0 .. x1, y1, mirrored
+ * left for right), at op (0..1) of its alpha, lit by its light row's fit (colour * a + b: fit[0..2]
+ * a, fit[3..5] b; NULL unlit).  1: the card draws it (the caller notes the pixels it would cover
+ * in port_gl_fxsh, as 0x100 | the canvas's colour there, and draws nothing); 0: the game's */
+int port_gl_fx(const uint8_t *rgba, int w, int h, const void *key, float x0, float y0, float x1, float y1,
+               int mirror, float op, const float *fit);
+extern uint16_t *port_gl_fxsh;
+
 /* the display's thread (platform.c): the frame's capture drawn on the renderer's graphics card;
  * pal the game's colours (0xAARRGGBB).  NULL when there is nothing to show (no capture, not the
  * GPU renderer, no DXIL shaders) */

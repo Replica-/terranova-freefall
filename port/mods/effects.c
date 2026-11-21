@@ -39,6 +39,9 @@
 #include "t2_b.h"
 #include "port.h"
 #include "fxpack.h"
+#include "gpuland.h"
+
+extern int port_s3d_on;                 /* sharp3d.c: drawing the sharp view */
 
 static FxPic *fx_cur;                   /* the picture port_fx_frame gave last */
 
@@ -341,6 +344,57 @@ static uchar mix(long o, long c, long a)
                       mx_b[o] + (mx_b[c] - mx_b[o]) * a / 255);
 }
 
+/* GPU rendering (port/video/gpuland.c): the picture handed to the card in its own colours and alpha,
+ * the light row clut as colour * a + b per channel (least squares over the picture's colours, as
+ * many times as it has each), and the canvas's pixels it would cover (xa .. xb, ya .. yb: alpha 16
+ * or more) noted for it instead of drawn; 0 when the card does not take it */
+static int gl_draw(const FxPic *p, long x0, long y0, long w, long h, const uchar *clut, long op, int mirror,
+                   long xa, long xb, long ya, long yb)
+{
+    static long cnt[256];
+    float fit[6];
+    grs_canvas *cv = grd_canvas;
+    long x, y, row = cv->bm.row, c, k;
+    if (clut) {
+        memset(cnt, 0, sizeof cnt);
+        for (c = 0; c < (long)p->w * p->h; c++)
+            if (p->rgba[c * 4 + 3] >= 16)
+                cnt[p->pix[c]]++;
+        for (k = 0; k < 3; k++) {
+            const long *ch = k == 0 ? mx_r : k == 1 ? mx_g : mx_b;
+            double sw = 0, sx = 0, sy = 0, sxx = 0, sxy = 0, a, b;
+            for (c = 0; c < 256; c++) {
+                double wt = cnt[c] + 0.01, X = ch[c] / 255.0, Y = ch[clut[c]] / 255.0;
+                sw += wt;
+                sx += wt * X;
+                sy += wt * Y;
+                sxx += wt * X * X;
+                sxy += wt * X * Y;
+            }
+            a = sxx * sw - sx * sx > 1e-12 ? (sxy * sw - sx * sy) / (sxx * sw - sx * sx) : 0;
+            b = (sy - a * sx) / sw;
+            fit[k] = (float)a;
+            fit[3 + k] = (float)b;
+        }
+    }
+    if (!port_gl_fx(p->rgba, p->w, p->h, p, (float)x0, (float)y0, (float)(x0 + w), (float)(y0 + h), mirror,
+                    op >= 256 ? 1.0f : op / 256.0f, clut ? fit : NULL))
+        return 0;
+    for (y = ya; y < yb; y++) {         /* the pixels it covers, as draw_alpha would draw them */
+        long sy = (2 * (y - y0) + 1) * p->h / (2 * h);
+        const uchar *A = p->rgba + sy * p->w * 4 + 3;
+        uchar *d = cv->bm.bits + y * row;
+        for (x = xa; x < xb; x++) {
+            long i = (2 * (x - x0) + 1) * p->w / (2 * w);
+            if (mirror)
+                i = p->w - 1 - i;
+            if ((op >= 256 ? A[i * 4] : A[i * 4] * op >> 8) >= 16)
+                port_gl_fxsh[(d + x) - port_gl_sh_base] = (uint16_t)(0x100 | d[x]);
+        }
+    }
+    return 1;
+}
+
 /* the picture p scaled to w x h at (x0, y0) on the canvas (mirror: turned left for right), each
  * pixel by its alpha times op / 256, through clut (NULL none) */
 static void draw_alpha(const FxPic *p, long x0, long y0, long w, long h, const uchar *clut, long op, int mirror)
@@ -355,6 +409,9 @@ static void draw_alpha(const FxPic *p, long x0, long y0, long w, long h, const u
     if (xa >= xb || ya >= yb || xb - xa > 4096 || op <= 0)
         return;
     mix_ready();
+    if (port_gl_capturing && port_s3d_on && p->rgba && !cv->gc.fill_type && port_gl_obj_canvas(cv->bm.bits) &&
+        gl_draw(p, x0, y0, w, h, clut, op, mirror, xa, xb, ya, yb))
+        return;                         /* GPU rendering draws it, in its own colours (gpuland.c) */
     for (x = xa; x < xb; x++) {
         sx[x - xa] = (2 * (x - x0) + 1) * p->w / (2 * w);
         if (mirror)
