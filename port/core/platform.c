@@ -239,6 +239,98 @@ static int refreshes_per_frame(void)
         return 0;
     return (int)n;
 }
+/* the frames on the refreshes: the refresh the frame being drawn began on, and its refreshes (0: it
+ * began on its own clock); of the last one finished, for the display (pace_skip) */
+static unsigned long frame_tick;
+static int frame_n;
+static volatile unsigned long pace_tick;
+static volatile int pace_n;
+
+/* Frame pacing (FREEFALL_PACE=0: off): with the game's frames on the refreshes, n of them a frame
+ * (refreshes_per_frame: 120 Hz at 60 frames a second), the window shows each frame once, at the
+ * refresh 2 n after the one it began on (n for the game's drawing, n for the window's), and nothing
+ * between.  Presenting every refresh, the new picture's work (up to 12 ms at 3D resolution 6x,
+ * more than a 120 Hz refresh) made it miss its refresh at times and not at others, so frames
+ * stayed up for one refresh, then three: the view moved unevenly at a steady frame rate (half the
+ * frames up their 2 refreshes while turning, 6x; 99% now, 80% at 6x where the game's own frame
+ * takes more than its 16.7 ms at times; n + 1 after was 75%) */
+static int pace_off = -1;
+static int pace_due_set;                /* the present being made goes up at pace_due */
+static unsigned long pace_due;
+static unsigned long shown_gf;          /* the game's frame the present being made shows */
+static unsigned long pace_late, pace_shown;     /* (FREEFALL_PRESENT_TIMES: presents after their refresh) */
+
+/* the display's loop: 1 when there is no new frame to show (the window keeps the last) */
+static int pace_skip(void)
+{
+    static unsigned long shown;
+    static uint64_t seen_at;
+    static unsigned long seen;
+    unsigned long gf = game_frames, tick;
+    uint64_t now = port_now_us();
+    int n;
+    if (pace_off < 0)
+        pace_off = SDL_getenv("FREEFALL_PACE") && !strcmp(SDL_getenv("FREEFALL_PACE"), "0");
+    if (gf != seen) {
+        seen = gf;
+        seen_at = now;
+    }
+    SDL_MemoryBarrierAcquire();
+    n = pace_n;
+    tick = pace_tick;
+    pace_due_set = 0;
+    /* (the frames coming: not the options screen's stand-still, the menus between missions) */
+    if (pace_off || port_lockstep || n < 2 || disp_per_us <= 0 || now - seen_at > 100000 || port_options_open ||
+        refreshes_per_frame() != n) {
+        shown = gf;
+        return 0;
+    }
+    if (gf == shown)
+        return 1;
+    shown = gf;
+    pace_due = tick + 2 * (unsigned long)n;
+    pace_due_set = 1;
+    return 0;
+}
+
+/* present: just before the picture goes up, the refresh before its own begun (so it goes up on
+ * its own, not one early when the work took less time) */
+static void pace_wait(void)
+{
+    uint64_t now = port_now_us(), at;
+    long ahead;
+    double per;
+    if (!pace_due_set)
+        return;
+    SDL_LockMutex(disp_mutex);
+    per = disp_per_us;
+    ahead = (long)(pace_due - 1 - disp_ticks);
+    at = disp_phase + (uint64_t)(ahead > 0 ? ahead * per : 0) + 1000;
+    SDL_UnlockMutex(disp_mutex);
+    if (per > 0 && ahead > 0 && at > now && at - now < 50000)
+        port_sleep_us(at - now);
+}
+
+/* after the present: did it go up at its refresh */
+static unsigned long up_hist[5];        /* (FREEFALL_PRESENT_TIMES: the frames up 1, 2, 3, 4, more refreshes) */
+
+static void pace_check(void)
+{
+    static unsigned long last_gf, last_tick;
+    if (last_gf != shown_gf) {          /* a new frame went up: how long the last one was */
+        unsigned long d = disp_ticks - last_tick;
+        if (last_tick && d >= 1)
+            up_hist[d > 5 ? 4 : d - 1]++;
+        last_gf = shown_gf;
+        last_tick = disp_ticks;
+    }
+    if (!pace_due_set)
+        return;
+    pace_shown++;
+    if ((long)(disp_ticks - pace_due) > 0)
+        pace_late++;
+}
+
 /* a mission stands still for the options screen (options.c: its pointer) */
 volatile int port_options_held;
 
@@ -253,6 +345,9 @@ void port_frame_limit(void)
     int mission_frame = seen != seen_last;  /* the mission's controls ran in this frame */
 
     seen_last = seen;
+    pace_tick = frame_tick;
+    pace_n = frame_n;
+    SDL_MemoryBarrierRelease();
     game_frames++;
     port_game_options_apply();          /* the options screen's sound settings (options.c) */
     port_pf_frame();                    /* the 3D view's copy of the map (mapedge.c) */
@@ -283,7 +378,7 @@ void port_frame_limit(void)
              * their own clock drifted against the refreshes: one that took a little longer to
              * draw (by water, with True colour) missed its refresh, the last one stayed on the
              * screen twice and the next was never shown, so walking jerked */
-            static unsigned long start_tick;
+            unsigned long start_tick = frame_tick;
             uint64_t limit = (next ? next : now) + (uint64_t)port_frame_us / 2;
             double per;
             SDL_LockMutex(disp_mutex);
@@ -309,8 +404,11 @@ void port_frame_limit(void)
                 start_tick = disp_ticks;
                 SDL_UnlockMutex(disp_mutex);
             }
+            frame_tick = start_tick;
+            frame_n = n;
             next = port_now_us() + (uint64_t)port_frame_us;
         } else {
+            frame_n = 0;
             if (now < next)
                 port_sleep_us(next - now);
             else
@@ -1621,7 +1719,10 @@ static void pt_report(void)
         last = now;
     if (now - last < 1000000000ull)
         return;
-    n += SDL_snprintf(line + n, sizeof line - n, "present times: %lu presents;", pt_n);
+    n += SDL_snprintf(line + n, sizeof line - n, "present times: %lu presents (%lu paced, %lu late; frames up 1/2/3/4/5+ refreshes: %lu/%lu/%lu/%lu/%lu);",
+                      pt_n, pace_shown, pace_late, up_hist[0], up_hist[1], up_hist[2], up_hist[3], up_hist[4]);
+    pace_shown = pace_late = 0;
+    memset(up_hist, 0, sizeof up_hist);
     for (i = 0; i < PT_N; i++)
         n += SDL_snprintf(line + n, sizeof line - n, " %s %.2f/%.2f", name[i], pt_sum[i] / 1e6 / pt_n, pt_max[i] / 1e6);
     port_log("%s\n", line);
@@ -2930,6 +3031,7 @@ static void present(void)
             SDL_SetAtomicInt(&sync_shot, 0);
         }
     }
+    pace_wait();
     pt_start(PT_PRESENT);
     SDL_RenderPresent(renderer);
     pt_stop(PT_PRESENT);
@@ -3681,13 +3783,18 @@ int port_run(game_entry fn, int argc, char **argv)
             }
         }
         SDL_SetAtomicInt(&in_present, 1);
-        if (!SDL_GetAtomicInt(&game_ending)) {
+        if (!SDL_GetAtomicInt(&game_ending) && pace_skip()) {
+            SDL_SetAtomicInt(&in_present, 0);   /* (no new frame: the last stays up) */
+            port_sleep_us(500);
+        } else if (!SDL_GetAtomicInt(&game_ending)) {
+            shown_gf = game_frames;
             pt_start(PT_ALL);
             present();
             pt_stop(PT_ALL);
             pt_report();
             SDL_SetAtomicInt(&in_present, 0);
             display_refreshed(display_hz());
+            pace_check();
         } else {                        /* the game's exit functions run: no drawing (P113) */
             SDL_SetAtomicInt(&in_present, 0);
             SDL_Delay(5);
@@ -3715,7 +3822,9 @@ int port_run(game_entry fn, int argc, char **argv)
     vsmooth_stop();
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
-    if (port_bench_report[0])           /* the benchmark's results (bench.c) */
+    /* the benchmark's results (bench.c; also in tnfree-bench.txt): not when the window was hidden
+     * (FREEFALL_HIDDEN: test runs, nobody to close it) */
+    if (port_bench_report[0] && !SDL_getenv("FREEFALL_HIDDEN"))
         SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, "Terra Nova: Freefall benchmark",
                                  port_bench_report, NULL);
     SDL_Quit();
