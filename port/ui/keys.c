@@ -11,8 +11,8 @@
  *
  * Each controls style (port_mouselook: 0 Vanilla, 1 Advanced) has its own list, order, names,
  * defaults and bindings.  Vanilla is the original game's keys; Advanced moves to S back and Z
- * slow forward, frees R V Q E C and Left Shift (the mouse looks), zooms with the wheel, and adds
- * the mouselook actions and gimbal mode.
+ * slow forward, strafes with A and D and turns with Q and E, frees R V C and Left Shift (the mouse
+ * looks), zooms with the wheel, and adds the mouselook actions and gimbal mode.
  *
  * Bindings apply only while a mission's controls run; in the menus, the base and the briefing
  * every key is the game's own.  With no binding changed in Vanilla nothing is translated.
@@ -117,8 +117,10 @@ static const short adv_defaults[][3] = {
     { A_LOOK_DOWN, 0, NONE },
     { A_HEAD_LEFT, 0, NONE },
     { A_HEAD_RIGHT, 0, NONE },
-    { A_STRAFE_LEFT, 0, SDL_SCANCODE_Q },
-    { A_STRAFE_RIGHT, 0, SDL_SCANCODE_E },
+    { A_TURN_LEFT, 0, SDL_SCANCODE_Q },   /* (A and D strafe, as most games have it) */
+    { A_TURN_RIGHT, 0, SDL_SCANCODE_E },
+    { A_STRAFE_LEFT, 0, SDL_SCANCODE_A },
+    { A_STRAFE_RIGHT, 0, SDL_SCANCODE_D },
     { A_BOUND, 0, NONE },
     { A_MOUSELOOK, 0, PORT_KEY_MOUSE_MIDDLE },
     { A_MOUSELOOK_HOLD, 0, SDL_SCANCODE_LSHIFT },

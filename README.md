@@ -116,8 +116,8 @@ There are two controls styles, chosen on the options screen (Gameplay, **Control
 | Mouse | Look around |
 | W / S | Forward / back |
 | Z | Forward at half speed |
-| A / D | Turn left / right |
-| Q / E | Strafe left / right |
+| A / D | Strafe left / right |
+| Q / E | Turn left / right |
 | F | Align body to head view: turn to face where you look |
 | X | Gimbal mode on / off: keep turning to face where you look, as if F were held |
 | Middle button | Free the pointer for the HUD / capture it again |

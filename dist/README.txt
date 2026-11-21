@@ -467,8 +467,8 @@ right click fire and target at the reticle, as in the original.
   Mouse wheel          zoom in / out
   W / S                forward / back
   Z                    forward at half speed
-  A / D                turn left / right
-  Q / E                strafe left / right
+  A / D                strafe left / right
+  Q / E                turn left / right
 
 Everything else stays on the game's own keys. Each controls style keeps its
 own key bindings; on the Key bindings page, DEFAULT KEYS brings back the defaults.
