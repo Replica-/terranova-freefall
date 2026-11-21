@@ -388,9 +388,19 @@ static void choose_k_at(int k, int scr_h, int *kx, int *ky)
     *ky = scr_h > 200 ? (k + 1) / 2 : k;
 }
 
+/* GPU rendering: the card draws the ground, objects, effects and weather at the setting's size; the
+ * canvas (what the card leaves to the game: trees, units, the sky; and where each shows) at no more
+ * than 4x, the dearest of the sharp drawing being its pixels */
+#define GL_CANVAS_K 4
+
+static int canvas_k(void)
+{
+    return port_sharp3d > GL_CANVAS_K && port_gl_working() ? GL_CANVAS_K : port_sharp3d;
+}
+
 static void choose_k(int scr_h, int *kx, int *ky)
 {
-    choose_k_at(port_sharp3d, scr_h, kx, ky);
+    choose_k_at(canvas_k(), scr_h, kx, ky);
 }
 
 void port_s3d_size(int setting, int scr_h, int *w, int *h)
@@ -1004,7 +1014,8 @@ void port_s3d_render(int slot, void *pview, void *pcam, int mirror)
             port_s3d_targ_rec = 1;
         }
         if (!slot && !mirror)           /* the GPU ground: the terrain's polygons caught (gpuland.c) */
-            port_gl_begin(&f->gl, big.bm.bits, W, (h + 2 * ey) * ky, hc.half_w, hc.half_h);
+            port_gl_begin(&f->gl, big.bm.bits, W, (h + 2 * ey) * ky, hc.half_w, hc.half_h,
+                          (float)port_sharp3d / canvas_k());
         ffpipe_29EDB4(&v, &hc);
         if (port_gl_capturing)
             port_gl_far();

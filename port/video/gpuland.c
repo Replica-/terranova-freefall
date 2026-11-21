@@ -86,6 +86,7 @@ typedef struct {
 
 typedef struct {
     int W, H;
+    int GW, GH;                         /* the card's picture (W x H times port_gl_begin's up) */
     float hw, hh;
     GpuVert *v;
     size_t nv, cap;
@@ -121,7 +122,7 @@ static unsigned serial;
 static int last_tex = -1, last_lt = -1;
 
 /* ------------------------------------------------------------------ the game's thread */
-void port_gl_begin(void **slot, const uint8_t *canvas, int W, int H, long half_w, long half_h)
+void port_gl_begin(void **slot, const uint8_t *canvas, int W, int H, long half_w, long half_h, float up)
 {
     Capture *c = *slot;
     size_t n = (size_t)W * H;
@@ -161,6 +162,8 @@ void port_gl_begin(void **slot, const uint8_t *canvas, int W, int H, long half_w
     port_gl_sh_base = canvas;
     c->W = W;
     c->H = H;
+    c->GW = up > 1 ? (int)(W * up + 0.5f) : W;
+    c->GH = up > 1 ? (int)(H * up + 0.5f) : H;
     c->hw = (float)half_w;
     c->hh = (float)half_h;
     c->nv = 0;
@@ -439,6 +442,12 @@ void port_gl_poly(const PortGlVert *v, int n, const uint8_t *tex, int colour, co
 static SDL_Renderer *g_r;
 static SDL_GPUDevice *dev;
 static int broken;
+
+int port_gl_working(void)
+{
+    return port_gl && !broken;
+}
+
 static SDL_GPUGraphicsPipeline *pipe;
 static SDL_GPUGraphicsPipeline *wx_pipe;   /* the weather's particles (gpuwx shaders) */
 static SDL_GPUTexture *wx_tex;          /* ... their layer, the picture's size (premultiplied) */
@@ -1030,9 +1039,9 @@ static void weather_pass(SDL_GPUCommandBuffer *cmd, const Capture *c, const floa
         u[34] = fall;
         u[35] = 0.12f;                  /* the streak: where the drop was 120 ms ago (the eye's blur) */
         u[36] = 0.014f;                 /* a flake (squares) */
-        u[37] = 1.3f + c->W / 1200.0f;  /* a streak's width (pixels) */
-        u[38] = (float)c->W;
-        u[39] = (float)c->H;
+        u[37] = 1.3f + c->GW / 1200.0f; /* a streak's width (pixels) */
+        u[38] = (float)c->GW;
+        u[39] = (float)c->GH;
         f[0] = (((col >> 16) & 255) / 255.0f) * 0.5f + 0.5f;    /* the game's drop colour, lighter */
         f[1] = (((col >> 8) & 255) / 255.0f) * 0.5f + 0.5f;
         f[2] = ((col & 255) / 255.0f) * 0.5f + 0.5f;
@@ -1189,7 +1198,7 @@ SDL_Texture *port_gl_render(SDL_Renderer *r, void *capture, const uint32_t *pal)
             return NULL;
         }
     }
-    if (!targets(c->W, c->H))
+    if (!targets(c->GW, c->GH))
         return NULL;
     if (c->serial == drawn_serial)
         return shown;
@@ -1470,7 +1479,7 @@ SDL_Texture *port_gl_render(SDL_Renderer *r, void *capture, const uint32_t *pal)
             port_log("GPU rendering: picture %dx%d, ground %lu triangles, %d textures; objects %lu triangles, "
                      "%d textures; effects %d (%d new); %d light tables, %lu dropped; fog %s (%.0f to %.0f squares, "
                      "colour %d = %06X)\n",
-                     c->W, c->H, (unsigned long)(c->nv / 3), c->ntex, (unsigned long)(c->onv / 3), c->notex, c->nfx,
+                     c->GW, c->GH, (unsigned long)(c->nv / 3), c->ntex, (unsigned long)(c->onv / 3), c->notex, c->nfx,
                      fx_nnew, c->nlt, c->dropped, c->fog ? "on" : "off", c->fog_start, c->fog_end, c->fog_colour,
                      (unsigned)(pal[c->fog_colour & 0xFF] & 0xFFFFFF));
         }

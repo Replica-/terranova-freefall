@@ -26,8 +26,11 @@ extern const uint8_t *port_gl_sh_base;
 void port_gl_shadow(int on);            /* weather.c: around a terrain polygon routine */
 
 /* the game's thread (sharp3d.c): around the main view's sharp drawing; *slot is the frame's own
- * capture (made on the first use), canvas its pixels, W x H, half_w / half_h its camera's */
-void port_gl_begin(void **slot, const uint8_t *canvas, int W, int H, long half_w, long half_h);
+ * capture (made on the first use), canvas its pixels, W x H, half_w / half_h its camera's; the
+ * card draws its picture up times the canvas across and down (the 3D resolution setting above
+ * what the canvas is drawn at: port_gl_working) */
+void port_gl_begin(void **slot, const uint8_t *canvas, int W, int H, long half_w, long half_h, float up);
+int port_gl_working(void);              /* GPU rendering on and not given up */
 void port_gl_end(void);
 
 /* the game's thread (sharp3d.c), before port_gl_end: the far land beyond the polygons, from the
