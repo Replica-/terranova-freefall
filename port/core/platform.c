@@ -2948,9 +2948,17 @@ static int sdl_buttons(SDL_MouseButtonFlags f)
 int port_mouselook;                     /* the controls style: 0 Vanilla, 1 Advanced (mouselook) */
 int port_mouselook_sens = 100;          /* percent */
 int port_mouselook_invert;              /* 1: mouse forward looks down */
-static SDL_AtomicInt ml_turn, ml_look;  /* angle units (0x10000 = full turn) not yet taken */
 static SDL_AtomicInt ml_cx, ml_cy;      /* the centre of the main view (game pointer coordinates) */
 static float ml_frac_x, ml_frac_y;
+/* the mouse's moves not yet taken (angle units, 0x10000 = full turn), each with when it came (SDL's
+ * event time, ns): a frame takes those up to one refresh before it starts, so every frame gets
+ * one frame's worth of the mouse.  Taking all there were, a frame starting on the refresh the
+ * display thread had not yet read the mouse after got one refresh's moves, the next three: the
+ * view turned in uneven steps at an even frame rate, and looking around felt choppy */
+#define ML_MOVES 256
+static struct { uint64_t ns; float x, y; } ml_moves[ML_MOVES];
+static int ml_n;
+static SDL_Mutex *ml_mutex;
 static volatile uint64_t ml_seen_us;    /* the last frame the player's controls ran */
 static int ml_freed;
 static volatile int ml_map;             /* the map fills the main view (M): no mouselook */
@@ -2961,8 +2969,29 @@ static volatile int ml_map;             /* the map fills the main view (M): no m
  * main view, so the pointer is free until it closes */
 int port_mouselook_take(int *turn, int *look, int cx, int cy, int map)
 {
-    *turn = SDL_SetAtomicInt(&ml_turn, 0);
-    *look = SDL_SetAtomicInt(&ml_look, 0);
+    {
+        uint64_t per = disp_per_us > 0 ? (uint64_t)disp_per_us : disp_avg_us, cut;
+        float x = 0, y = 0;
+        int i, k = 0;
+        per = per < 2000 ? 2000 : per > 20000 ? 20000 : per;
+        cut = SDL_GetTicksNS() - per * 1000;
+        SDL_LockMutex(ml_mutex);
+        for (i = 0; i < ml_n; i++) {
+            if (ml_moves[i].ns <= cut) {
+                x += ml_moves[i].x;
+                y += ml_moves[i].y;
+            } else
+                ml_moves[k++] = ml_moves[i];
+        }
+        ml_n = k;
+        ml_frac_x += x;
+        ml_frac_y += y;
+        *turn = (int)ml_frac_x;
+        *look = (int)ml_frac_y;
+        ml_frac_x -= *turn;
+        ml_frac_y -= *look;
+        SDL_UnlockMutex(ml_mutex);
+    }
     ml_map = map;
     if (map)
         *turn = *look = 0;
@@ -3026,9 +3055,10 @@ static void ml_update(void)
             port_mouse_warp(SDL_GetAtomicInt(&ml_cx), SDL_GetAtomicInt(&ml_cy));
             do_warp();
         }
-        SDL_SetAtomicInt(&ml_turn, 0);
-        SDL_SetAtomicInt(&ml_look, 0);
+        SDL_LockMutex(ml_mutex);
+        ml_n = 0;
         ml_frac_x = ml_frac_y = 0;
+        SDL_UnlockMutex(ml_mutex);
         if (want) {
             if (port_wide_ptr) {        /* widescreen: the pointer leaves the side for the reticle */
                 port_wide_ptr = 0;
@@ -3057,26 +3087,33 @@ static void ml_toggle(void)
     }
 }
 
-static void ml_motion(float dx, float dy)
+static void ml_add(uint64_t ns, float x, float y)
 {
-    float k = ML_UNITS * port_mouselook_sens / 100.0f;
-    int ix, iy;
-
-    ml_frac_x += dx * k;
-    ml_frac_y += dy * k * (port_mouselook_invert ? -1 : 1);
-    ix = (int)ml_frac_x;
-    iy = (int)ml_frac_y;
-    ml_frac_x -= ix;
-    ml_frac_y -= iy;
-    SDL_AddAtomicInt(&ml_turn, ix);
-    SDL_AddAtomicInt(&ml_look, iy);
+    SDL_LockMutex(ml_mutex);
+    if (ml_n == ML_MOVES) {             /* (no frame taking them: kept as one) */
+        ml_moves[ml_n - 1].x += x;
+        ml_moves[ml_n - 1].y += y;
+        ml_moves[ml_n - 1].ns = ns > ml_moves[ml_n - 1].ns ? ns : ml_moves[ml_n - 1].ns;
+    } else {
+        ml_moves[ml_n].ns = ns;
+        ml_moves[ml_n].x = x;
+        ml_moves[ml_n].y = y;
+        ml_n++;
+    }
+    SDL_UnlockMutex(ml_mutex);
 }
 
-/* lockstep runs (lockstep.c L action): a mouselook move as the mouse would give it */
+static void ml_motion(uint64_t ns, float dx, float dy)
+{
+    float k = ML_UNITS * port_mouselook_sens / 100.0f;
+    ml_add(ns, dx * k, dy * k * (port_mouselook_invert ? -1 : 1));
+}
+
+/* lockstep runs (lockstep.c L action): a mouselook move as the mouse would give it, taken by the
+ * next frame */
 void port_mouselook_add(int turn, int look)
 {
-    SDL_AddAtomicInt(&ml_turn, turn);
-    SDL_AddAtomicInt(&ml_look, look);
+    ml_add(0, (float)turn, (float)look);
 }
 
 /* ------------------------------------------------------------------ scripted input (testing)
@@ -3337,7 +3374,7 @@ static void handle_event(SDL_Event *e)
         break;
     case SDL_EVENT_MOUSE_MOTION:
         if (ml_active) {
-            ml_motion(e->motion.xrel, e->motion.yrel);
+            ml_motion(e->motion.timestamp, e->motion.xrel, e->motion.yrel);
             break;
         }
         to_game(e->motion.x, e->motion.y, &gx, &gy);
@@ -3526,6 +3563,7 @@ int port_platform_init(void)
     irq_mutex = SDL_CreateMutex();
     disp_mutex = SDL_CreateMutex();
     disp_cond = SDL_CreateCondition();
+    ml_mutex = SDL_CreateMutex();
     port_video.vram = (uint8_t *)SDL_calloc(PORT_VRAM_KB, 1024);
     port_video.dac_bits = 6;
     return 0;
