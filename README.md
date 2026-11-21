@@ -21,7 +21,7 @@ The same walk in Operation Seagull, frame for frame. Above: the original rendere
 | Where it's drawn | The processor (11–18 ms a frame at 4× 3D resolution in the built-in benchmark) | The graphics card |
 | Status | Complete | **Ground only so far.** Sky, objects, water and weather come next |
 
-The GPU ground is a test feature for now. It needs Direct3D 12 (DXIL shaders); Vulkan comes later. Turn it on by starting `tnfree.exe` with the environment variable `FREEFALL_GPU_LAND=1`. It doesn't make the game faster yet: the processor still draws the original picture alongside it, which the game's own logic reads. The speed gain comes once more of the world moves to the card.
+The GPU ground is experimental for now. It needs Direct3D 12 (DXIL shaders); Vulkan comes later. Turn it on with **O** (the Freefall options), **Display**, **GPU ground: On** (saved as `screen_gpu_ground=on` in `tnfree.ini`). Close up it keeps the game's square texels with smoothed edges; further away it uses full-colour mipmaps with anisotropic filtering, so distant ground doesn't shimmer. It doesn't make the game faster yet: the processor still draws the original picture alongside it, which the game's own logic reads. The speed gain comes once more of the world moves to the card.
 
 Every change is checked against a deterministic baseline of all 39 campaign missions (`tools/baseline.py`).
 

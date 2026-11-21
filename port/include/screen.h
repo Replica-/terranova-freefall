@@ -32,7 +32,7 @@ enum { S_SHARP3D, S_WIDE, S_AA, S_FOG, S_TRUECOL, S_MAP, S_EFFECTS, S_OBJPACK, S
        S_SCALE,
        S_VIDEOS, S_MOVIES,
        S_TERRAIN, S_SMOOTH, S_WATER, S_RIPPLES, S_WATERFX,
-       S_OBJECTS, S_ENEMIES, S_TREESIZE, S_BURN,
+       S_OBJECTS, S_ENEMIES, S_TREESIZE, S_BURN, S_GPULAND,
        S_BRIGHT, S_GAMMA, S_CONTRAST, S_COLOUR, S_SCAN, S_EFFECT, S_RESET, S_COUNT };
 int port_screen_usable(int i);          /* 0: the line needs another setting first (drawn grey) */
 void port_screen_preset(int p);         /* a preset's values: 0 Classic, 1 Vanilla+, 2 Freefall */

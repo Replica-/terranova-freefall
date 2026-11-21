@@ -22,11 +22,26 @@ PY
     rm -f "$1"
 }
 
+# a DXC without SPIR-V (the Windows SDK's): DXIL only, the SPIR-V headers left as they are
+spirv=1
+echo 'float4 main() : SV_Target { return 0; }' > _probe.hlsl
+"$DXC" -nologo -T ps_6_0 -E main -spirv _probe.hlsl -Fo _probe.spv >/dev/null 2>&1 || spirv=0
+rm -f _probe.hlsl _probe.spv
+[ $spirv = 1 ] || echo "build-shaders.sh: this DXC makes no SPIR-V; DXIL only" >&2
+
+build() {      # build <source> <name> <profile>
+    echo "$1"
+    if [ $spirv = 1 ]; then
+        "$DXC" -nologo -T "$3" -E main -O3 -spirv -fspv-target-env=vulkan1.0 "$1" -Fo "$2.spv"
+        header "$2.spv" "${2}_spv" "$1"
+    fi
+    "$DXC" -nologo -T "$3" -E main -O3 -Qstrip_debug -Qstrip_reflect "$1" -Fo "$2.dxil"
+    header "$2.dxil" "${2}_dxil" "$1"
+}
+
 for src in *.frag.hlsl; do
-    name=${src%.frag.hlsl}
-    echo "$src"
-    "$DXC" -nologo -T ps_6_0 -E main -O3 -spirv -fspv-target-env=vulkan1.0 "$src" -Fo "$name.spv"
-    "$DXC" -nologo -T ps_6_0 -E main -O3 -Qstrip_debug -Qstrip_reflect "$src" -Fo "$name.dxil"
-    header "$name.spv" "${name}_spv" "$src"
-    header "$name.dxil" "${name}_dxil" "$src"
+    build "$src" "${src%.frag.hlsl}" ps_6_0
+done
+for src in *.vert.hlsl; do     # (name_vert: a vertex shader beside its fragment one)
+    build "$src" "${src%.vert.hlsl}_vert" vs_6_0
 done

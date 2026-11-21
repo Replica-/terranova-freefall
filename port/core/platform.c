@@ -2026,7 +2026,8 @@ static SDL_Texture *ck_compose(int w, int h, int pitch, const uint8_t *src, cons
             same &= (sv[i] ? sv[i]->serial : 0) == ck_made.side[i];
         }
         if (ck_tex && f->scr && !paused && f->serial == ck_made.serial && disp32_serial == ck_made.pal &&
-            ck.xh0 == ck_made.xh0 && cw == ck_made.cw && pk == ck_made.pack && same) {
+            ck.xh0 == ck_made.xh0 && cw == ck_made.cw && pk == ck_made.pack && same &&
+            ck_keyed == (port_gl == 1 && port_gl_mask(f->gl, 0) != NULL)) {
             /* the same picture as last time */
             if (one)
                 SDL_RenderTexture(renderer, ckv_tex, NULL, &vr);
@@ -2357,6 +2358,8 @@ static SDL_Texture *sharp3d_compose_now(int w, int h, int pitch, const uint8_t *
         fs[i] = f;
         n += f != NULL;
     }
+    if (port_gl == 1 && fs[0])          /* the GPU ground (gpuland.c): drawn for this very picture */
+        port_gl_render(renderer, fs[0]->gl, disp32);
     ck.on = 0;
     if (!n)
         return stretch ? ck_compose(w, h, pitch, src, NULL, NULL, NULL, texture, 1, 1, ex) : NULL;
@@ -2427,7 +2430,8 @@ static SDL_Texture *sharp3d_compose_now(int w, int h, int pitch, const uint8_t *
         /* the same picture as at the last present (the game makes 25 or 60 a second, the display
          * shows more), with the pointer where it was: the texture holds it already */
         if (f->scr && !paused && f->serial == s3d_made[i].serial && cx0 == s3d_made[i].cx0 && cy0 == s3d_made[i].cy0 &&
-            cx1 == s3d_made[i].cx1 && cy1 == s3d_made[i].cy1 && disp32_serial == s3d_made[i].pal)
+            cx1 == s3d_made[i].cx1 && cy1 == s3d_made[i].cy1 && disp32_serial == s3d_made[i].pal &&
+            s3d_keyed[i] == (i == 0 && port_gl == 1 && port_gl_mask(f->gl, 0) != NULL))
             goto draw;
         if (!SDL_LockTexture(s3d_tex[i], NULL, &pixels, &tpitch))
             continue;
@@ -2656,11 +2660,6 @@ static void present(void)
             SDL_Texture *sharp;
             if (port_cursor_shown())
                 ck_cur_seen = port_now_us();
-            if (port_gl == 1) {         /* the GPU ground (gpuland.c): drawn before the picture takes it */
-                const port_s3d_frame *f0 = port_s3d_take(0);
-                if (f0)
-                    port_gl_render(renderer, f0->gl, disp32);
-            }
             sharp = sharp3d_compose(w, h, pitch, port_video.vram + start, &ex);
             if (sharp && s3d_aa) {      /* Anti-aliasing: on the 3D's pixels, at 3D resolution 2x+ */
                 float sw, sh;

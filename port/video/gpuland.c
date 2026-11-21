@@ -23,7 +23,7 @@
 #include <string.h>
 #include "gpuland.h"
 #include "shaders/gpuland_vert.dxil.h"
-#include "shaders/gpuland_frag.dxil.h"
+#include "shaders/gpuland.dxil.h"
 #include "shaders/gpuland_mix.dxil.h"
 
 void port_log(const char *fmt, ...);
@@ -41,6 +41,9 @@ static size_t sh_n;
 #define TEX_SIZE 4096                   /* 64 x 64 */
 #define NEAR_Z (1.0f / 64)
 #define FAR_Z 8192.0f
+#define MIPS 7                          /* 64 .. 1 */
+#define MIP_BYTES (4 * (64 * 64 + 32 * 32 + 16 * 16 + 8 * 8 + 4 * 4 + 2 * 2 + 1))
+#define FIT_BYTES (2 * 24 * 16)
 
 /* a point as the card gets it: x, y, z, light | u, v, texture layer, light table */
 typedef struct {
@@ -232,6 +235,8 @@ static int broken;
 static SDL_GPUGraphicsPipeline *pipe;
 static SDL_GPUSampler *point;
 static SDL_GPUTexture *texels, *ltabs, *paltex, *color, *depth;
+static SDL_GPUTexture *colours, *fits;  /* the textures in colour (mipmapped), the rows' fits */
+static SDL_GPUSampler *trilin;
 static SDL_GPUTextureFormat depth_fmt;
 static SDL_GPUBuffer *vbuf;
 static Uint32 vbuf_size;
@@ -251,8 +256,8 @@ static void forget(void)
     g_r = NULL;
     dev = NULL;
     pipe = NULL;
-    point = NULL;
-    texels = ltabs = paltex = color = depth = NULL;
+    point = trilin = NULL;
+    texels = ltabs = paltex = color = depth = colours = fits = NULL;
     vbuf = NULL;
     tbuf = NULL;
     vbuf_size = tbuf_size = 0;
@@ -277,6 +282,12 @@ void port_gl_shutdown(void)
             SDL_ReleaseGPUGraphicsPipeline(dev, pipe);
         if (point)
             SDL_ReleaseGPUSampler(dev, point);
+        if (trilin)
+            SDL_ReleaseGPUSampler(dev, trilin);
+        if (colours)
+            SDL_ReleaseGPUTexture(dev, colours);
+        if (fits)
+            SDL_ReleaseGPUTexture(dev, fits);
         if (texels)
             SDL_ReleaseGPUTexture(dev, texels);
         if (ltabs)
@@ -296,7 +307,7 @@ void port_gl_shutdown(void)
 }
 
 static SDL_GPUTexture *make_tex(SDL_GPUTextureType type, SDL_GPUTextureFormat fmt, SDL_GPUTextureUsageFlags usage,
-                                int w, int h, int layers)
+                                int w, int h, int layers, int levels)
 {
     SDL_GPUTextureCreateInfo ti;
     SDL_zero(ti);
@@ -306,7 +317,7 @@ static SDL_GPUTexture *make_tex(SDL_GPUTextureType type, SDL_GPUTextureFormat fm
     ti.width = (Uint32)w;
     ti.height = (Uint32)h;
     ti.layer_count_or_depth = (Uint32)layers;
-    ti.num_levels = 1;
+    ti.num_levels = (Uint32)levels;
     return SDL_CreateGPUTexture(dev, &ti);
 }
 
@@ -345,10 +356,10 @@ static int setup(SDL_Renderer *r)
     SDL_zero(si);
     si.format = SDL_GPU_SHADERFORMAT_DXIL;
     si.entrypoint = "main";
-    si.code = gpuland_frag_dxil;
-    si.code_size = gpuland_frag_dxil_len;
+    si.code = gpuland_dxil;
+    si.code_size = gpuland_dxil_len;
     si.stage = SDL_GPU_SHADERSTAGE_FRAGMENT;
-    si.num_samplers = 3;
+    si.num_samplers = 5;
     si.num_uniform_buffers = 1;
     fs = SDL_CreateGPUShader(dev, &si);
     if (!vs || !fs) {
@@ -402,10 +413,21 @@ static int setup(SDL_Renderer *r)
     sci.mipmap_mode = SDL_GPU_SAMPLERMIPMAPMODE_NEAREST;
     sci.address_mode_u = sci.address_mode_v = sci.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
     point = SDL_CreateGPUSampler(dev, &sci);
-    texels = make_tex(SDL_GPU_TEXTURETYPE_2D_ARRAY, SDL_GPU_TEXTUREFORMAT_R8_UNORM, SDL_GPU_TEXTUREUSAGE_SAMPLER, 64, 64, TEX_MAX);
-    ltabs = make_tex(SDL_GPU_TEXTURETYPE_2D_ARRAY, SDL_GPU_TEXTUREFORMAT_R8_UNORM, SDL_GPU_TEXTUREUSAGE_SAMPLER, 256, 24, LT_MAX);
-    paltex = make_tex(SDL_GPU_TEXTURETYPE_2D, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, SDL_GPU_TEXTUREUSAGE_SAMPLER, 256, 1, 1);
-    if (!point || !texels || !ltabs || !paltex) {
+    sci.min_filter = sci.mag_filter = SDL_GPU_FILTER_LINEAR;
+    sci.mipmap_mode = SDL_GPU_SAMPLERMIPMAPMODE_LINEAR;
+    sci.address_mode_u = sci.address_mode_v = SDL_GPU_SAMPLERADDRESSMODE_REPEAT;
+    sci.max_lod = 16;
+    sci.enable_anisotropy = true;       /* the ground seen at a low angle: sharp along it, not smeared */
+    sci.max_anisotropy = 8;
+    trilin = SDL_CreateGPUSampler(dev, &sci);
+    colours = make_tex(SDL_GPU_TEXTURETYPE_2D_ARRAY, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, SDL_GPU_TEXTUREUSAGE_SAMPLER,
+                       64, 64, TEX_MAX, MIPS);
+    fits = make_tex(SDL_GPU_TEXTURETYPE_2D_ARRAY, SDL_GPU_TEXTUREFORMAT_R32G32B32A32_FLOAT, SDL_GPU_TEXTUREUSAGE_SAMPLER,
+                    2, 24, LT_MAX, 1);
+    texels = make_tex(SDL_GPU_TEXTURETYPE_2D_ARRAY, SDL_GPU_TEXTUREFORMAT_R8_UNORM, SDL_GPU_TEXTUREUSAGE_SAMPLER, 64, 64, TEX_MAX, 1);
+    ltabs = make_tex(SDL_GPU_TEXTURETYPE_2D_ARRAY, SDL_GPU_TEXTUREFORMAT_R8_UNORM, SDL_GPU_TEXTUREUSAGE_SAMPLER, 256, 24, LT_MAX, 1);
+    paltex = make_tex(SDL_GPU_TEXTURETYPE_2D, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, SDL_GPU_TEXTUREUSAGE_SAMPLER, 256, 1, 1, 1);
+    if (!point || !trilin || !texels || !ltabs || !paltex || !colours || !fits) {
         port_log("GPU ground: textures not made (%s), off\n", SDL_GetError());
         return 0;
     }
@@ -429,8 +451,8 @@ static int targets(int W, int H)
         SDL_ReleaseGPUTexture(dev, depth);
     shown = NULL;
     color = make_tex(SDL_GPU_TEXTURETYPE_2D, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
-                     SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER, W, H, 1);
-    depth = make_tex(SDL_GPU_TEXTURETYPE_2D, depth_fmt, SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET, W, H, 1);
+                     SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER, W, H, 1, 1);
+    depth = make_tex(SDL_GPU_TEXTURETYPE_2D, depth_fmt, SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET, W, H, 1, 1);
     if (!color || !depth)
         return 0;
     p = SDL_CreateProperties();
@@ -476,6 +498,57 @@ static int buffers(Uint32 vbytes, Uint32 tbytes)
     return vbuf && tbuf;
 }
 
+/* a texture's colours (64 x 64 colour numbers through the palette) and its mipmaps down to 1 x 1,
+ * one after the other (MIP_BYTES) */
+static void make_mips(uint8_t *d, const uint8_t *idx, const uint32_t *pal)
+{
+    int i, x, y, n = 64;
+    for (i = 0; i < 64 * 64; i++) {
+        uint32_t c = pal[idx[i]];
+        d[i * 4 + 0] = (uint8_t)(c >> 16);
+        d[i * 4 + 1] = (uint8_t)(c >> 8);
+        d[i * 4 + 2] = (uint8_t)c;
+        d[i * 4 + 3] = 255;
+    }
+    while (n > 1) {
+        uint8_t *s = d, *o = d + (size_t)n * n * 4;
+        int h = n / 2, k;
+        for (y = 0; y < h; y++)
+            for (x = 0; x < h; x++)
+                for (k = 0; k < 4; k++) {
+                    const uint8_t *a = s + ((size_t)(2 * y) * n + 2 * x) * 4 + k;
+                    o[((size_t)y * h + x) * 4 + k] = (uint8_t)((a[0] + a[4] + a[n * 4] + a[n * 4 + 4] + 2) / 4);
+                }
+        d = o;
+        n = h;
+    }
+}
+
+/* each row of a light table as colour * a + b per channel (least squares over the 256 colours):
+ * row r's a at texel (0, r), b at (1, r), RGBA floats */
+static void make_fit(float *d, const uint8_t *lt, const uint32_t *pal)
+{
+    int r, c, k;
+    for (r = 0; r < 24; r++)
+        for (k = 0; k < 3; k++) {
+            int sh = 16 - 8 * k;
+            double sx = 0, sy = 0, sxx = 0, sxy = 0, a, b;
+            for (c = 0; c < 256; c++) {
+                double x = ((pal[c] >> sh) & 255) / 255.0, y = ((pal[lt[r * 256 + c]] >> sh) & 255) / 255.0;
+                sx += x;
+                sy += y;
+                sxx += x * x;
+                sxy += x * y;
+            }
+            a = sxx * 256 - sx * sx > 1e-9 ? (sxy * 256 - sx * sy) / (sxx * 256 - sx * sx) : 0;
+            b = (sy - a * sx) / 256;
+            d[(r * 2 + 0) * 4 + k] = (float)a;
+            d[(r * 2 + 1) * 4 + k] = (float)b;
+        }
+    for (r = 0; r < 24; r++)
+        d[(r * 2 + 0) * 4 + 3] = d[(r * 2 + 1) * 4 + 3] = 0;
+}
+
 SDL_Texture *port_gl_render(SDL_Renderer *r, void *capture, const uint32_t *pal)
 {
     Capture *c = capture;
@@ -486,7 +559,7 @@ SDL_Texture *port_gl_render(SDL_Renderer *r, void *capture, const uint32_t *pal)
     SDL_GPURenderPass *rp;
     SDL_GPUColorTargetInfo cti;
     SDL_GPUDepthStencilTargetInfo dti;
-    SDL_GPUTextureSamplerBinding sb[3];
+    SDL_GPUTextureSamplerBinding sb[5];
     SDL_GPUBufferBinding bb;
     float cam[8], look[4];
     int i;
@@ -507,7 +580,7 @@ SDL_Texture *port_gl_render(SDL_Renderer *r, void *capture, const uint32_t *pal)
     drawn_serial = c->serial;
 
     vbytes = (Uint32)(c->nv * sizeof(GpuVert));
-    tbytes = (Uint32)c->ntex * TEX_SIZE + (Uint32)c->nlt * LT_SIZE + 1024 + vbytes;
+    tbytes = (Uint32)c->ntex * (TEX_SIZE + MIP_BYTES) + (Uint32)c->nlt * (LT_SIZE + FIT_BYTES) + 1024 + vbytes;
     if (!buffers(vbytes ? vbytes : 64, tbytes))
         return NULL;
     m = SDL_MapGPUTransferBuffer(dev, tbuf, true);
@@ -526,6 +599,12 @@ SDL_Texture *port_gl_render(SDL_Renderer *r, void *capture, const uint32_t *pal)
     }
     off += 1024;
     memcpy(m + off, c->v, vbytes);
+    off += vbytes;
+    for (i = 0; i < c->ntex; i++)       /* the colours and their mipmaps, the rows' fits (below) */
+        make_mips(m + off + (size_t)i * MIP_BYTES, c->tex[i], pal);
+    off += (Uint32)c->ntex * MIP_BYTES;
+    for (i = 0; i < c->nlt; i++)
+        make_fit((float *)(m + off + (size_t)i * FIT_BYTES), c->lt[i], pal);
     SDL_UnmapGPUTransferBuffer(dev, tbuf);
 
     cmd = SDL_AcquireGPUCommandBuffer(dev);
@@ -570,6 +649,35 @@ SDL_Texture *port_gl_render(SDL_Renderer *r, void *capture, const uint32_t *pal)
         SDL_GPUBufferRegion dst = { vbuf, 0, vbytes };
         SDL_UploadToGPUBuffer(cp, &src, &dst, true);
     }
+    off += vbytes;
+    for (i = 0; i < c->ntex; i++) {
+        Uint32 o = off + (Uint32)i * MIP_BYTES;
+        int lv, n;
+        for (lv = 0, n = 64; lv < MIPS; lv++, n /= 2) {
+            SDL_GPUTextureTransferInfo src = { tbuf, o, (Uint32)n, (Uint32)n };
+            SDL_GPUTextureRegion dst;
+            SDL_zero(dst);
+            dst.texture = colours;
+            dst.mip_level = (Uint32)lv;
+            dst.layer = (Uint32)i;
+            dst.w = dst.h = (Uint32)n;
+            dst.d = 1;
+            SDL_UploadToGPUTexture(cp, &src, &dst, false);
+            o += (Uint32)n * n * 4;
+        }
+    }
+    off += (Uint32)c->ntex * MIP_BYTES;
+    for (i = 0; i < c->nlt; i++) {
+        SDL_GPUTextureTransferInfo src = { tbuf, off + (Uint32)i * FIT_BYTES, 2, 24 };
+        SDL_GPUTextureRegion dst;
+        SDL_zero(dst);
+        dst.texture = fits;
+        dst.layer = (Uint32)i;
+        dst.w = 2;
+        dst.h = 24;
+        dst.d = 1;
+        SDL_UploadToGPUTexture(cp, &src, &dst, false);
+    }
     SDL_EndGPUCopyPass(cp);
 
     SDL_zero(cti);
@@ -611,7 +719,11 @@ SDL_Texture *port_gl_render(SDL_Renderer *r, void *capture, const uint32_t *pal)
         sb[1].sampler = point;
         sb[2].texture = paltex;
         sb[2].sampler = point;
-        SDL_BindGPUFragmentSamplers(rp, 0, sb, 3);
+        sb[3].texture = colours;
+        sb[3].sampler = trilin;
+        sb[4].texture = fits;
+        sb[4].sampler = point;
+        SDL_BindGPUFragmentSamplers(rp, 0, sb, 5);
         SDL_PushGPUVertexUniformData(cmd, 0, cam, sizeof cam);
         SDL_PushGPUFragmentUniformData(cmd, 0, look, sizeof look);
         SDL_DrawGPUPrimitives(rp, (Uint32)c->nv, 1, 0, 0);

@@ -56,6 +56,7 @@
 #include "cockpitpack.h"
 #include "arms.h"
 #include "helmetfx.h"
+#include "gpuland.h"
 #include "videosmooth.h"
 
 #include "shaders/crt.spv.h"
@@ -155,6 +156,9 @@ void port_screen_load(void (*get)(const char *key, char *out, int size))
     get("screen_truecolour", v, sizeof v);
     port_truecol = !SDL_strcasecmp(v, "glow") ? 2 : !SDL_strcasecmp(v, "on");
     v[0] = 0;
+    get("screen_gpu_ground", v, sizeof v);     /* gpuland.c (FREEFALL_GPU_LAND overrides it) */
+    port_gl = !SDL_strcasecmp(v, "on");
+    v[0] = 0;
     get("screen_map", v, sizeof v);             /* "smooth" and "soft": earlier test builds' */
     port_map_smooth = !SDL_strcasecmp(v, "on") || !SDL_strcasecmp(v, "smooth") || !SDL_strcasecmp(v, "soft");
     v[0] = 0;
@@ -225,6 +229,8 @@ void port_screen_save(FILE *f)
         fprintf(f, "screen_fog=on\n");
     if (port_truecol)
         fprintf(f, "screen_truecolour=%s\n", port_truecol == 2 ? "glow" : "on");
+    if (port_gl)
+        fprintf(f, "screen_gpu_ground=on\n");
     if (port_water_full)
         fprintf(f, "screen_water=%s\n", port_water_full == 2 ? "high" : "medium");
     if (port_water_ripples)
@@ -270,7 +276,7 @@ int port_screen_gpu_wanted(void)
     const char *s = SDL_getenv("FREEFALL_RENDERER");
     if (s && !SDL_strcmp(s, "gpu"))
         return 1;
-    return (effect != FX_OFF || fxaa) && !gpu_unavailable;
+    return (effect != FX_OFF || fxaa || port_gl) && !gpu_unavailable;     /* (the GPU ground draws on it) */
 }
 
 /* the FXAA pass will run: the display marks the 3D's pixels for it (platform.c) */
@@ -608,7 +614,7 @@ static const char *labels[S_COUNT] = {
     "3D resolution", "Widescreen", "Anti-aliasing", "Fog", "True colour", "Map smoothing", "Effects mod", "Objects mod",
     "Cockpit mod", "Dynamic helmet", "Arms mod", "Infrared", "Scaling", "Smooth videos", "Movie size",
     "Terrain distance", "Terrain smoothing", "Water reflection", "Water ripples", "Water effects",
-    "Object distance", "Enemy distance", "Tree size", "Tree explosion",
+    "Object distance", "Enemy distance", "Tree size", "Tree explosion", "GPU ground",
     "Brightness", "Gamma", "Contrast", "Colour", "Scanlines", "Effect",
     "Switch all filters off",
 };
@@ -764,6 +770,10 @@ const char *port_screen_help_v(int i, int v)
         return v ? "Sizes 0.6x to 2x, the picture only" : "Trees, bushes and rocks the game's size";
     case S_BURN:
         return v ? "Vegetation bursts apart, Freefall Mod is recommended" : "Classic: the game's fireball";
+    case S_GPULAND:
+        if (v && gpu_unavailable)
+            return "Needs Direct3D 12";
+        return v ? "Ground drawn by the graphics card: no swimming textures" : "Off: the ground as the game draws it";
     case S_INFRARED:
         return v ? "Real thermal camera vision" : "Classic: the game's infrared colours";
     case S_SCALE:
@@ -879,6 +889,9 @@ void port_screen_value(int i, char *buf, size_t n)
     case S_BURN:
         SDL_snprintf(buf, n, "%s", port_burn ? "Realistic" : "Classic");
         break;
+    case S_GPULAND:
+        SDL_snprintf(buf, n, "%s", port_gl ? "On" : "Off");
+        break;
     case S_INFRARED:
         SDL_snprintf(buf, n, "%s", port_ir_style ? "Sci-fi" : "Classic");
         break;
@@ -992,6 +1005,9 @@ void port_screen_change(int i, int dir)
     case S_BURN:
         port_burn = !port_burn;
         break;
+    case S_GPULAND:
+        port_gl = !port_gl;
+        break;
     case S_INFRARED:
         port_ir_style = !port_ir_style;
         break;
@@ -1052,6 +1068,7 @@ int port_screen_get(int i)
     case S_HMOTION: return port_helmet_motion != 0;
     case S_TREESIZE: return port_tree_size != 0;
     case S_BURN: return port_burn != 0;
+    case S_GPULAND: return port_gl != 0;
     case S_INFRARED: return port_ir_style != 0;
     case S_SCALE: return scale_mode;
     case S_VIDEOS: return port_smooth_videos != 0;

@@ -1,11 +1,13 @@
 """The visual and speed baseline: every campaign mission played the same way, its window saved.
 
 usage: python3 baseline.py --exe build/tnfree.exe --game DIR --cd DIR --user DIR --out DIR
-                           [--missions 1,2,...] [--size 1280x720] [--no-bench]
+                           [--missions 1,2,...] [--size 1280x720] [--no-bench] [--hidden]
 
 Each mission runs in lockstep (port/test/lockstep.c): started straight from the shell, the game's
 clock 0x32 ticks a frame, no timer, no sound, no window on the screen (SDL's offscreen driver),
-so the same build and settings give the same pictures, pixel for pixel, on every run.  The player
+so the same build and settings give the same pictures, pixel for pixel, on every run.
+--hidden: a hidden window on the real video driver instead (FREEFALL_HIDDEN), for the
+graphics card's renderer and the GPU ground, which SDL's offscreen driver has none of.  The player
 stands where the mission starts and turns: a picture at frame 100 (ahead), 250 (half a turn
 later, behind) and 400 (a quarter turn more).  --user is the settings (tnfree.ini) and mods to
 draw with; its Show FPS should be off (the meter changes from run to run).
@@ -45,8 +47,8 @@ WEATHER = {0: 'rain', 1: 'snow', 255: 'none'}
 
 
 def run(args, env_extra, extra_args=(), timeout=600):
-    env = dict(os.environ, SDL_VIDEO_DRIVER='offscreen', SDL_AUDIO_DRIVER='dummy',
-               FREEFALL_WINDOW=args.size, **env_extra)
+    video = {'FREEFALL_HIDDEN': '1'} if args.hidden else {'SDL_VIDEO_DRIVER': 'offscreen'}
+    env = dict(os.environ, SDL_AUDIO_DRIVER='dummy', FREEFALL_WINDOW=args.size, **video, **env_extra)
     cmd = [args.exe, '--user', args.user, '--game', args.game, '--cd', args.cd, *extra_args]
     t = time.time()
     try:
@@ -67,6 +69,7 @@ def main():
     ap.add_argument('--missions', help='comma-separated mission numbers (default: the campaign)')
     ap.add_argument('--size', default='1280x720')
     ap.add_argument('--no-bench', action='store_true')
+    ap.add_argument('--hidden', action='store_true')
     args = ap.parse_args()
     args.exe, args.user, args.out = (os.path.abspath(p) for p in (args.exe, args.user, args.out))
     os.makedirs(args.out, exist_ok=True)
