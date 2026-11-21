@@ -37,6 +37,7 @@ extern int port_s3d_on;                 /* port/video/sharp3d.c: drawing the sha
 void port_s3d_drop(long c, const void *bm, long x16, long y16);
 extern uchar **port_sky_refl_row;       /* sky_refl_row, or the sharp view's longer one */
 uchar *port_marks_tex(long tex, int big);   /* port/mods/marks.c: the effects pack's BlastMarks */
+#include "gpuland.h"                    /* port/video/gpuland.c: the GPU ground's capture */
 #endif
 
 #ifndef TN_LINK_ORIGINAL_DATA
@@ -1268,6 +1269,30 @@ static uchar pack_mark(TrVert **pts, long n, long x, long y, long k)
 }
 #endif
 
+#ifndef TN_WATCOM_ABI
+/* the GPU ground (port/video/gpuland.c): the polygon as the routine draws it, caught in the main
+ * view's sharp drawing; tex its 64 x 64 texture (NULL: flat in colour), lt its light table */
+static void gl_catch(TrVert **pts, long n, const uchar *tex, int colour, const uchar *lt)
+{
+    PortGlVert v[16];
+    long i;
+    if (!port_gl_capturing || !port_s3d_on || n < 3 || n > 16)
+        return;
+    for (i = 0; i < n; i++) {
+        v[i].x = pts[i]->x / 65536.0f;
+        v[i].y = pts[i]->y / 65536.0f;
+        v[i].z = pts[i]->z / 65536.0f;
+        v[i].u = pts[i]->r / 65536.0f;
+        v[i].v = pts[i]->g / 65536.0f;
+        v[i].shade = pts[i]->shade / 65536.0f;
+    }
+    port_gl_poly(v, (int)n, tex, colour, lt);
+}
+#define GL_CATCH(pts, n, tex, colour, lt) gl_catch(pts, n, tex, colour, lt)
+#else
+#define GL_CATCH(pts, n, tex, colour, lt) ((void)0)
+#endif
+
 static uchar sky_first(TrVert **pts, long n, long x, long y)
 {
     return !game_41DE34 && ffpipe_35C100 && !grd_canvas->gc.fill_type
@@ -1283,9 +1308,12 @@ uchar weather_2B2340(TrVert **pts, long n, long x, long y)
     for (i = 0; i < n; i++)
         pts[i]->b = fix_div(0x10000, pts[i]->z);
 #ifndef TN_WATCOM_ABI
-    if (pack_mark(pts, n, x, y, 0x68))
+    if (pack_mark(pts, n, x, y, 0x68)) {
+        GL_CATCH(pts, n, terr_tex_bm.bits, 0, grd_screen->ltab);
         return 1;
+    }
 #endif
+    GL_CATCH(pts, n, terr_tex_bm.bits, 0, grd_screen->ltab);
     WATCOM_CALL(grd_canvas_table[0x68 + terr_tex_bm.type * 2], (long)&terr_tex_bm, n, (long)pts);
     return 1;
 }
@@ -1296,9 +1324,12 @@ uchar weather_2B2418(TrVert **pts, long n, long x, long y)
         return 1;
     terr_tex_bm.bits = cell_tex(x, y);
 #ifndef TN_WATCOM_ABI
-    if (pack_mark(pts, n, x, y, 0x42))
+    if (pack_mark(pts, n, x, y, 0x42)) {
+        GL_CATCH(pts, n, terr_tex_bm.bits, 0, grd_screen->ltab);
         return 1;
+    }
 #endif
+    GL_CATCH(pts, n, terr_tex_bm.bits, 0, grd_screen->ltab);
     WATCOM_CALL(grd_canvas_table[0x42 + terr_tex_bm.type * 2], (long)&terr_tex_bm, n, (long)pts);
     return 1;
 }
@@ -1306,6 +1337,7 @@ uchar weather_2B2418(TrVert **pts, long n, long x, long y)
 uchar weather_2B24C0(TrVert **pts, long n, long x, long y)
 {
     uchar c = planet_res2c[*(ushort *)CELL(x, y) & 0x3FF];
+    GL_CATCH(pts, n, NULL, c, NULL);
     WATCOM_CALL(grd_canvas_table[25], c, n, (long)pts);
     return 1;
 }

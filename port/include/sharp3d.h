@@ -187,6 +187,7 @@ typedef struct {
     uint8_t *lab_m;
     size_t lab_cap, lab_used;
     unsigned serial;
+    void *gl;                           /* the GPU ground's capture of its terrain (gpuland.c) */
 } port_s3d_frame;
 
 /* game thread, the HUD's marks drawn sharp (mapcone.c): the main view's picture being made and

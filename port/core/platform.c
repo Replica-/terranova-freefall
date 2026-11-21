@@ -15,6 +15,7 @@
 #include "sharp3d.h"
 #include "version.h"
 #include "videosmooth.h"
+#include "gpuland.h"
 #include "mapedge.h"
 #include "helmetfx.h"
 
@@ -2670,6 +2671,22 @@ static void present(void)
             }
             port_help_present(renderer, ww, wh, &shown, w, shown_ex, shown_stretched);  /* help.c: H's screen */
         }
+        if (port_gl) {                  /* the GPU ground (gpuland.c): for now in place of the picture */
+            const port_s3d_frame *f0 = port_s3d_take(0);
+            SDL_Texture *gt = f0 ? port_gl_render(renderer, f0->gl, disp32) : NULL;
+            float gw, gh;
+            if (gt && SDL_GetTextureSize(gt, &gw, &gh) && gw > 0 && gh > 0) {
+                SDL_FRect r;
+                float s = SDL_min(ww / gw, wh / gh);
+                r.w = gw * s;
+                r.h = gh * s;
+                r.x = (ww - r.w) / 2;
+                r.y = (wh - r.h) / 2;
+                SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+                SDL_RenderClear(renderer);
+                SDL_RenderTexture(renderer, gt, NULL, &r);
+            }
+        }
         port_missions_render(renderer, &dst_rect);      /* the Mission Selector, over the main menu */
         if (port_show_fps || port_bench)
             fps_meter(ww, wh);
@@ -3339,6 +3356,7 @@ int port_run(game_entry fn, int argc, char **argv)
     }
     if ((s = SDL_getenv("FREEFALL_SCRIPT")) != NULL && *s)
         script = SDL_strdup(s);
+    port_gl = (s = SDL_getenv("FREEFALL_GPU_LAND")) != NULL && *s == '1';  /* gpuland.c (testing) */
     shot_window = (s = SDL_getenv("FREEFALL_SHOT_WINDOW")) != NULL && *s == '1';
 
     {   /* FREEFALL_WINDOW=WxH: the window's first size (test screenshots at a given size) */
@@ -3348,11 +3366,16 @@ int port_run(game_entry fn, int argc, char **argv)
             ww = atoi(s);
             wh = atoi(strchr(s, 'x') + 1);
         }
+        /* FREEFALL_HIDDEN=1: the window is never shown (tests that need the graphics card, which
+         * SDL's offscreen video driver has none of: the GPU renderer, the GPU 3D view) */
+        SDL_WindowFlags hidden = (s = SDL_getenv("FREEFALL_HIDDEN")) != NULL && *s == '1' ? SDL_WINDOW_HIDDEN : 0;
         /* Fullscreen on (tnfree.ini, read before this): full screen from the start; leaving it
          * gives the window this size */
+        if (hidden)
+            port_fullscreen = 0;
         fullscreen = port_fullscreen;
         window = SDL_CreateWindow("Terra Nova: Freefall " FREEFALL_VERSION_FULL, ww, wh,
-                                  SDL_WINDOW_RESIZABLE | (fullscreen ? SDL_WINDOW_FULLSCREEN : 0));
+                                  SDL_WINDOW_RESIZABLE | hidden | (fullscreen ? SDL_WINDOW_FULLSCREEN : 0));
         if (!window && fullscreen) {    /* full screen failed: a window */
             port_log("Fullscreen: cannot start full screen (%s), a window instead\n", SDL_GetError());
             fullscreen = port_fullscreen = 0;
