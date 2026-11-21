@@ -19,6 +19,7 @@ extern int port_gl_capturing;           /* the main view's sharp drawing is bein
  * noted at port_gl_sh[pixel - port_gl_sh_base] as 0x100 | its colour (src/2d/perloop.c,
  * fl8lin.c); NULL otherwise.  A pixel still holding that colour at the end shows the ground */
 extern uint16_t *port_gl_sh;
+extern uint16_t *port_gl_shc;          /* ... the far land's (colras.c, haze.c): the whole drawing */
 extern const uint8_t *port_gl_sh_base;
 void port_gl_shadow(int on);            /* weather.c: around a terrain polygon routine */
 
@@ -26,6 +27,14 @@ void port_gl_shadow(int on);            /* weather.c: around a terrain polygon r
  * capture (made on the first use), canvas its pixels, W x H, half_w / half_h its camera's */
 void port_gl_begin(void **slot, const uint8_t *canvas, int W, int H, long half_w, long half_h);
 void port_gl_end(void);
+
+/* the game's thread (sharp3d.c), before port_gl_end: the far land beyond the polygons, from the
+ * map (port/video/gpufar.c) */
+void port_gl_far(void);
+
+/* ... with the view: the game's view matrix (cell offsets ey, height, ex to view space, rows)
+ * and offset, and its fog (start, end in squares, its colour; fog 0: none) for each pixel */
+void port_gl_view(const float m[9], const float mz[3], int fog, float start, float end, int colour);
 
 /* the game's thread (weather.c): a terrain polygon of n points, textured (tex: 64 x 64 colour
  * numbers) or flat (tex NULL, colour), through the light table ltab (24 x 256; NULL: unlit) */
@@ -42,10 +51,11 @@ void port_gl_shutdown(void);
  * (W x H, 1 = ground), from row `row` of the canvas on; NULL when the card has no picture of it */
 const uint8_t *port_gl_mask(void *capture, int row);
 
-/* the colour the display writes where the ground goes (with the 3D's alpha), and the render
- * state that puts the card's ground there as a texture of the picture is drawn: its texel
- * (u, v) is the card picture's (u * sx, v * sy + oy); NULL: none */
-#define PORT_GL_KEY 0x00010203u
-struct SDL_GPURenderState *port_gl_state(struct SDL_Renderer *r, float sx, float sy, float oy);
+/* the alpha the display gives the pixels where the ground goes (their colour kept), and the
+ * render state that puts the card's ground there as a texture of the picture is drawn: its texel
+ * (u, v) is the card picture's (u * sx, v * sy + oy); the pixels' alpha then a (the 3D's).  NULL:
+ * none */
+#define PORT_GL_MARK_A 253
+struct SDL_GPURenderState *port_gl_state(struct SDL_Renderer *r, float sx, float sy, float oy, float a);
 
 #endif

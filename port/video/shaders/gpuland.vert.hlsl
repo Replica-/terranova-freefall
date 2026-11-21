@@ -25,6 +25,7 @@ struct VSOutput {
     VK(location(0)) float2 uv : TEXCOORD0;
     VK(location(1)) float shade : TEXCOORD1;
     VK(location(2)) nointerpolation float2 sel : TEXCOORD2;
+    VK(location(3)) float3 view : TEXCOORD3;     /* the point in view space (the fog's distance) */
 };
 
 VSOutput main(VSInput i)
@@ -35,5 +36,6 @@ VSOutput main(VSInput i)
     o.uv = i.b.xy;
     o.shade = i.a.w;
     o.sel = i.b.zw;
+    o.view = i.a.xyz;
     return o;
 }

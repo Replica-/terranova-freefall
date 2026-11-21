@@ -992,12 +992,18 @@ typedef struct {
     const uint8_t *glm;                 /* the GPU ground's mask, as high (gpuland.c); NULL none */
 } CkRows;
 
-/* the GPU ground (gpuland.c): a view's picture made with its key colour where the ground goes,
+/* the GPU ground (gpuland.c): the view's pixels that show the ground keep their colour, with the
+ * alpha PORT_GL_MARK_A (the card's ground goes there; where the card drew nothing, the colour) */
+#define PORT_GL_MARK(c) (((c) & 0x00FFFFFFu) | ((uint32_t)PORT_GL_MARK_A << 24))
+#define GL_PICK(ground, c) ((ground) ? PORT_GL_MARK(c) : (c))
+
+/* the GPU ground (gpuland.c): a view's picture made with its mark where the ground goes,
  * drawn with the card's ground put there; the picture's rows are the card picture's from row oy
  * of hg, h of them (all its rows: oy 0, h hg) */
 static void draw_keyed(SDL_Texture *t, const SDL_FRect *r, int keyed, int oy, int h, int hg)
 {
-    SDL_GPURenderState *st = keyed && hg > 0 ? port_gl_state(renderer, 1.0f, (float)h / hg, (float)oy / hg) : NULL;
+    SDL_GPURenderState *st = keyed && hg > 0 ? port_gl_state(renderer, 1.0f, (float)h / hg, (float)oy / hg,
+                                                            s3d_aa ? 254 / 255.0f : 1.0f) : NULL;
     if (st)
         SDL_SetGPURenderState(renderer, st);
     SDL_RenderTexture(renderer, t, NULL, r);
@@ -1127,7 +1133,7 @@ static void ck_rows(void *arg, int part, int thread)
                          scr[b] != ckp.art[(size_t)sy * rw->sw + f->x + b])
                     d[X] = 0xFF000000u | disp32[scr[b]];
                 else if (gm && gm[X])
-                    d[X] = a3 | PORT_GL_KEY;
+                    d[X] = PORT_GL_MARK(tc && tc[X] ? tc_px(tc_faded(tc[X], hi[X]), a3) : p3[hi[X]]);
                 else if (tc && tc[X])
                     d[X] = tc_px(tc_faded(tc[X], hi[X]), a3);
                 else
@@ -1140,7 +1146,7 @@ static void ck_rows(void *arg, int part, int thread)
                      !(tip && b + f->x >= f->tip_x0 && b + f->x <= f->tip_x1))
                 d[X] = 0xFF000000u | disp32[scr[b]];    /* the HUD drew here */
             else if (gm && gm[X])   /* the GPU ground */
-                d[X] = a3 | PORT_GL_KEY;
+                d[X] = PORT_GL_MARK(tc && tc[X] ? tc_px(tc_faded(tc[X], hi[X]), a3) : p3[hi[X]]);
             else if (tc && tc[X])   /* True colour */
                 d[X] = tc_px(tc_faded(tc[X], hi[X]), a3);
             else
@@ -1203,7 +1209,7 @@ static void ck_rows_one(void *arg, int part, int thread)
             int gy = f->y + (Yv < 0 ? -((-Yv + ky - 1) / ky) : Yv / ky);
             for (X = 0; X < hw; X++) {
                 int gx = rw->xh0 + X / kx - E, C = rw->xh0 + X / kx;
-                dw[X] = gm && gm[X] ? a3 | PORT_GL_KEY : tc && tc[X] ? tc_px(tc_faded(tc[X], hi[X]), a3) : p3[hi[X]];
+                dw[X] = GL_PICK(gm && gm[X], tc && tc[X] ? tc_px(tc_faded(tc[X], hi[X]), a3) : p3[hi[X]]);
                 /* (only in the helmet's parts: in its window, the 3D) */
                 /* (and in the pack's holes where the screen is not the game's art: what the HUD
                  * drew there, the pirate's weapon box in the 320 x 200 cockpit above the view) */
@@ -1227,7 +1233,7 @@ static void ck_rows_one(void *arg, int part, int thread)
             int b = l1[X], C = rw->xh0 + X / kx, gx = C - E;
             int on = gx >= 0 && gx < sw, inv = b >= 0 && b < f->w, inc = C >= 0 && C < cw;
             const port_s3d_frame *g = NULL;
-            uint32_t w3 = gm && gm[X] ? a3 | PORT_GL_KEY : tc && tc[X] ? tc_px(tc_faded(tc[X], hi[X]), a3) : p3[hi[X]], fr = 0;
+            uint32_t w3 = GL_PICK(gm && gm[X], tc && tc[X] ? tc_px(tc_faded(tc[X], hi[X]), a3) : p3[hi[X]]), fr = 0;
             db[X] = hud && hud[X / kx] && !(hm && inv && hm[b]) ? 0xFF000000u | disp32[hud[X / kx]] : 0;
             if (hud_over_3d(rw, X, Yv, &hc)) {
                 if (rw->lay && inc && sy >= 0 && sy < rw->sh &&
@@ -2264,7 +2270,7 @@ static void s3d_rows(void *arg, int part, int thread)
         uint32_t *d = (uint32_t *)((uint8_t *)pixels + (size_t)Y * tpitch), *d0 = d;
         int lx, k;
         for (k = 0; k < f->ex; k++, hi++, tc = tc ? tc + 1 : NULL)  /* widescreen: the sides as drawn */
-            *d++ = GLK(hi) ? a3 | PORT_GL_KEY : tc && *tc ? tc_px(tc_faded(*tc, *hi), a3) : p3[*hi];
+            *d++ = GL_PICK(GLK(hi), tc && *tc ? tc_px(tc_faded(*tc, *hi), a3) : p3[*hi]);
         for (lx = 0; lx < f->w; lx++) {
             /* the screen as copied with the picture (the game may have copied the next
              * frame's since); the screen itself under the pointer, which the game draws
@@ -2279,13 +2285,13 @@ static void s3d_rows(void *arg, int part, int thread)
                     tc += kx;
             } else if (tc)          /* True colour: its full colours where it has them */
                 for (k = 0; k < kx; k++, hi++, tc++)
-                    *d++ = GLK(hi) ? a3 | PORT_GL_KEY : *tc ? tc_px(tc_faded(*tc, *hi), a3) : p3[*hi];
+                    *d++ = GL_PICK(GLK(hi), *tc ? tc_px(tc_faded(*tc, *hi), a3) : p3[*hi]);
             else
                 for (k = 0; k < kx; k++, hi++)
-                    *d++ = GLK(hi) ? a3 | PORT_GL_KEY : p3[*hi];
+                    *d++ = GL_PICK(GLK(hi), p3[*hi]);
         }
         for (k = 0; k < f->ex; k++, hi++, tc = tc ? tc + 1 : NULL)
-            *d++ = GLK(hi) ? a3 | PORT_GL_KEY : tc && *tc ? tc_px(tc_faded(*tc, *hi), a3) : p3[*hi];
+            *d++ = GL_PICK(GLK(hi), tc && *tc ? tc_px(tc_faded(*tc, *hi), a3) : p3[*hi]);
         if (s3d_aa && f->lab_n)
             label_alpha(f, Y, d0);
     }
@@ -2324,6 +2330,15 @@ static SDL_Texture *sharp3d_compose_now(int w, int h, int pitch, const uint8_t *
     static int s3d_nomask = -1;
     if (s3d_nomask < 0)
         s3d_nomask = SDL_getenv("FREEFALL_S3D_NOMASK") != NULL;
+    static int s3d_gl;                  /* the pictures' format: with alpha for the GPU ground's mark */
+    if (!port_gl != !s3d_gl) {
+        s3d_gl = port_gl;
+        for (i = 0; i < PORT_S3D_SLOTS; i++) {
+            if (s3d_tex[i])
+                SDL_DestroyTexture(s3d_tex[i]);
+            s3d_tex[i] = NULL;
+        }
+    }
     if ((port_screen_fxaa_wanted() && renderer_gpu) != s3d_aa) {
         /* "Anti-aliasing" on or off: the pictures again, with or without the 3D's mark */
         s3d_aa = !s3d_aa;
@@ -2417,8 +2432,8 @@ static SDL_Texture *sharp3d_compose_now(int w, int h, int pitch, const uint8_t *
         if (!s3d_tex[i] || s3d_tw[i] != hw || s3d_th[i] != hh) {
             if (s3d_tex[i])
                 SDL_DestroyTexture(s3d_tex[i]);
-            s3d_tex[i] = SDL_CreateTexture(renderer, s3d_aa ? SDL_PIXELFORMAT_ARGB8888 : SDL_PIXELFORMAT_XRGB8888,
-                                           SDL_TEXTUREACCESS_STREAMING, hw, hh);
+            s3d_tex[i] = SDL_CreateTexture(renderer, s3d_aa || port_gl ? SDL_PIXELFORMAT_ARGB8888 : SDL_PIXELFORMAT_XRGB8888,
+                                           SDL_TEXTUREACCESS_STREAMING, hw, hh);     /* (the GPU ground's mark) */
             s3d_tw[i] = hw;
             s3d_th[i] = hh;
             if (!s3d_tex[i])

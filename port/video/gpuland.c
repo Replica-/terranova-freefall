@@ -31,6 +31,7 @@ void port_log(const char *fmt, ...);
 int port_gl;
 int port_gl_capturing;
 uint16_t *port_gl_sh;
+uint16_t *port_gl_shc;
 const uint8_t *port_gl_sh_base;
 static uint16_t *sh_buf;                /* the shadow of the canvas (the game's thread) */
 static size_t sh_n;
@@ -62,6 +63,8 @@ typedef struct {
     uint8_t (*lt)[LT_SIZE];
     unsigned long dropped;
     unsigned serial;
+    int fog, fog_colour;                /* the fog for each pixel (port_gl_view) */
+    float fog_start, fog_end, m[9], mz[3];
     uint8_t *mask;                      /* W x H: 1 where the finished picture shows the ground */
     size_t mask_n;
     const uint8_t *canvas;
@@ -115,10 +118,25 @@ void port_gl_begin(void **slot, const uint8_t *canvas, int W, int H, long half_w
     c->hh = (float)half_h;
     c->nv = 0;
     c->ntex = c->nlt = 0;
+    c->fog = 0;
     c->dropped = 0;
     last_tex = last_lt = -1;
     cur = c;
     port_gl_capturing = 1;
+    port_gl_shc = sh_buf;
+}
+
+void port_gl_view(const float m[9], const float mz[3], int fog, float start, float end, int colour)
+{
+    Capture *c = cur;
+    if (!c)
+        return;
+    memcpy(c->m, m, sizeof c->m);
+    memcpy(c->mz, mz, sizeof c->mz);
+    c->fog = fog && end > start;
+    c->fog_start = start;
+    c->fog_end = end;
+    c->fog_colour = colour;
 }
 
 void port_gl_shadow(int on)
@@ -132,6 +150,7 @@ void port_gl_end(void)
     if (!c)
         return;
     port_gl_sh = NULL;
+    port_gl_shc = NULL;
     if (c->mask) {                      /* the ground: drawn by the terrain, not drawn over since */
         size_t i, n = (size_t)c->W * c->H;
         for (i = 0; i < n; i++)
@@ -524,24 +543,27 @@ static void make_mips(uint8_t *d, const uint8_t *idx, const uint32_t *pal)
     }
 }
 
-/* each row of a light table as colour * a + b per channel (least squares over the 256 colours):
- * row r's a at texel (0, r), b at (1, r), RGBA floats */
-static void make_fit(float *d, const uint8_t *lt, const uint32_t *pal)
+/* each row of a light table as colour * a + b per channel (least squares over the colours, each
+ * weighted by how many texels of this picture's textures have it: the far land's mipmaps mix
+ * those, and a fit over the whole palette missed the haze rows' grey); row r's a at texel (0, r),
+ * b at (1, r), RGBA floats */
+static void make_fit(float *d, const uint8_t *lt, const uint32_t *pal, const double *wt)
 {
     int r, c, k;
     for (r = 0; r < 24; r++)
         for (k = 0; k < 3; k++) {
             int sh = 16 - 8 * k;
-            double sx = 0, sy = 0, sxx = 0, sxy = 0, a, b;
+            double sw = 0, sx = 0, sy = 0, sxx = 0, sxy = 0, a, b;
             for (c = 0; c < 256; c++) {
-                double x = ((pal[c] >> sh) & 255) / 255.0, y = ((pal[lt[r * 256 + c]] >> sh) & 255) / 255.0;
-                sx += x;
-                sy += y;
-                sxx += x * x;
-                sxy += x * y;
+                double x = ((pal[c] >> sh) & 255) / 255.0, y = ((pal[lt[r * 256 + c]] >> sh) & 255) / 255.0, w = wt[c];
+                sw += w;
+                sx += w * x;
+                sy += w * y;
+                sxx += w * x * x;
+                sxy += w * x * y;
             }
-            a = sxx * 256 - sx * sx > 1e-9 ? (sxy * 256 - sx * sy) / (sxx * 256 - sx * sx) : 0;
-            b = (sy - a * sx) / 256;
+            a = sxx * sw - sx * sx > 1e-9 ? (sxy * sw - sx * sy) / (sxx * sw - sx * sx) : 0;
+            b = sw > 0 ? (sy - a * sx) / sw : 0;
             d[(r * 2 + 0) * 4 + k] = (float)a;
             d[(r * 2 + 1) * 4 + k] = (float)b;
         }
@@ -561,7 +583,7 @@ SDL_Texture *port_gl_render(SDL_Renderer *r, void *capture, const uint32_t *pal)
     SDL_GPUDepthStencilTargetInfo dti;
     SDL_GPUTextureSamplerBinding sb[5];
     SDL_GPUBufferBinding bb;
-    float cam[8], look[4];
+    float cam[8], look[28];
     int i;
 
     if (!port_gl || broken || !c || c->W <= 0 || c->H <= 0)
@@ -603,8 +625,17 @@ SDL_Texture *port_gl_render(SDL_Renderer *r, void *capture, const uint32_t *pal)
     for (i = 0; i < c->ntex; i++)       /* the colours and their mipmaps, the rows' fits (below) */
         make_mips(m + off + (size_t)i * MIP_BYTES, c->tex[i], pal);
     off += (Uint32)c->ntex * MIP_BYTES;
-    for (i = 0; i < c->nlt; i++)
-        make_fit((float *)(m + off + (size_t)i * FIT_BYTES), c->lt[i], pal);
+    {
+        double wt[256];
+        size_t j;
+        for (i = 0; i < 256; i++)
+            wt[i] = 0.25;               /* (every colour a little: a fit for colours no texture has) */
+        for (i = 0; i < c->ntex; i++)
+            for (j = 0; j < TEX_SIZE; j++)
+                wt[c->tex[i][j]] += 1;
+        for (i = 0; i < c->nlt; i++)
+            make_fit((float *)(m + off + (size_t)i * FIT_BYTES), c->lt[i], pal, wt);
+    }
     SDL_UnmapGPUTransferBuffer(dev, tbuf);
 
     cmd = SDL_AcquireGPUCommandBuffer(dev);
@@ -682,10 +713,10 @@ SDL_Texture *port_gl_render(SDL_Renderer *r, void *capture, const uint32_t *pal)
 
     SDL_zero(cti);
     cti.texture = color;
-    cti.clear_color.r = 0.10f;          /* where no ground is drawn (the sky, for now) */
+    cti.clear_color.r = 0.10f;          /* where no ground is drawn (alpha 0: the picture keeps its own) */
     cti.clear_color.g = 0.12f;
     cti.clear_color.b = 0.16f;
-    cti.clear_color.a = 1.0f;
+    cti.clear_color.a = 0.0f;
     cti.load_op = SDL_GPU_LOADOP_CLEAR;
     cti.store_op = SDL_GPU_STOREOP_STORE;
     SDL_zero(dti);
@@ -707,8 +738,35 @@ SDL_Texture *port_gl_render(SDL_Renderer *r, void *capture, const uint32_t *pal)
         cam[4] = FAR_Z / (FAR_Z - NEAR_Z);
         cam[5] = -NEAR_Z * FAR_Z / (FAR_Z - NEAR_Z);
         cam[6] = cam[7] = 0;
+        memset(look, 0, sizeof look);
         look[0] = (float)filter;
-        look[1] = look[2] = look[3] = 0;
+        if (c->fog) {                   /* the fog: start, end, its colour; the view's inverse */
+            const float *a = c->m;
+            float det = a[0] * (a[4] * a[8] - a[5] * a[7]) - a[1] * (a[3] * a[8] - a[5] * a[6]) +
+                        a[2] * (a[3] * a[7] - a[4] * a[6]);
+            uint32_t fc = pal[c->fog_colour & 0xFF];
+            if (det != 0) {
+                float k = 1 / det;
+                look[4] = c->fog_start;
+                look[5] = c->fog_end;
+                look[6] = 1;
+                look[8] = ((fc >> 16) & 255) / 255.0f;
+                look[9] = ((fc >> 8) & 255) / 255.0f;
+                look[10] = (fc & 255) / 255.0f;
+                look[12] = (a[4] * a[8] - a[5] * a[7]) * k;     /* rows of the inverse */
+                look[13] = (a[2] * a[7] - a[1] * a[8]) * k;
+                look[14] = (a[1] * a[5] - a[2] * a[4]) * k;
+                look[16] = (a[5] * a[6] - a[3] * a[8]) * k;
+                look[17] = (a[0] * a[8] - a[2] * a[6]) * k;
+                look[18] = (a[2] * a[3] - a[0] * a[5]) * k;
+                look[20] = (a[3] * a[7] - a[4] * a[6]) * k;
+                look[21] = (a[1] * a[6] - a[0] * a[7]) * k;
+                look[22] = (a[0] * a[4] - a[1] * a[3]) * k;
+                look[24] = c->mz[0];
+                look[25] = c->mz[1];
+                look[26] = c->mz[2];
+            }
+        }
         SDL_BindGPUGraphicsPipeline(rp, pipe);
         bb.buffer = vbuf;
         bb.offset = 0;
@@ -734,8 +792,10 @@ SDL_Texture *port_gl_render(SDL_Renderer *r, void *capture, const uint32_t *pal)
     {
         static int told;
         if (!told && c->nv && ++told)
-            port_log("GPU ground: first picture %dx%d, %lu triangles, %d textures, %d light tables, %lu dropped\n",
-                     c->W, c->H, (unsigned long)(c->nv / 3), c->ntex, c->nlt, c->dropped);
+            port_log("GPU ground: first picture %dx%d, %lu triangles, %d textures, %d light tables, %lu dropped; "
+                     "fog %s (%.0f to %.0f squares, colour %d = %06X)\n",
+                     c->W, c->H, (unsigned long)(c->nv / 3), c->ntex, c->nlt, c->dropped, c->fog ? "on" : "off",
+                     c->fog_start, c->fog_end, c->fog_colour, (unsigned)(pal[c->fog_colour & 0xFF] & 0xFFFFFF));
     }
     return shown;
 }
@@ -748,7 +808,7 @@ const uint8_t *port_gl_mask(void *capture, int row)
     return c->mask + (size_t)row * c->W;
 }
 
-SDL_GPURenderState *port_gl_state(SDL_Renderer *r, float sx, float sy, float oy)
+SDL_GPURenderState *port_gl_state(SDL_Renderer *r, float sx, float sy, float oy, float a)
 {
     float map[4];
     if (!port_gl || broken || r != g_r || !color)
@@ -794,7 +854,7 @@ SDL_GPURenderState *port_gl_state(SDL_Renderer *r, float sx, float sy, float oy)
     map[0] = sx;
     map[1] = sy;
     map[2] = oy;
-    map[3] = 0;
+    map[3] = a;
     SDL_SetGPURenderStateFragmentUniforms(mix, 0, map, sizeof map);
     return mix;
 }

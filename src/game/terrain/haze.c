@@ -31,6 +31,14 @@
 #define STRIP ((TerrBin *)hview_strip)
 #define ENTP(i) (&game_entities[(short)(i)])
 #define SHADE(p) ((*(ushort *)(p) >> 6) & 0xE)
+#ifndef TN_WATCOM_ABI
+/* the GPU ground (port/video/gpuland.c): the far land's pixels noted while it is drawn */
+extern unsigned short *port_gl_shc;
+extern const unsigned char *port_gl_sh_base;
+#define GL_NOTE_FAR(q) do { if (port_gl_shc) port_gl_shc[(q) - port_gl_sh_base] = (unsigned short)(0x100 | *(q)); } while (0)
+#else
+#define GL_NOTE_FAR(q) ((void)0)
+#endif
 
 static fix fmul(fix a, fix b)
 {
@@ -141,6 +149,14 @@ static int hz_is_water(uchar *c)
 {
     return !(*(long *)c & 0x40 && !hz_coarse) && hz_wtex[*c & 0x3F];
 }
+
+#ifndef TN_WATCOM_ABI
+/* the GPU ground's far land (port/video/gpufar.c): the cell is water, as the caster has it */
+int port_hz_water(uchar *c)
+{
+    return hz_wtex[*c & 0x3F] && !(*c & 0x40);
+}
+#endif
 
 /* "Fog" (port/video/fog.c): this drawing is fogged; the fog of the last point and of the point just
  * projected (0..0x1000), the last ring drawn */
@@ -663,6 +679,7 @@ static inline __attribute__((always_inline)) void hz_run_body(const HzRun *u, co
             }
         } else
             bits[rows[r]] = c;
+        GL_NOTE_FAR(bits + rows[r]);
         if (tw16 < 0x1000000) {         /* (the values may go a row past the bottom's: kept in
                                          * their ranges above) */
             tw16 += dtw;

@@ -10,6 +10,10 @@
  *     light and fog rows are close to that), so the far ground doesn't shimmer;
  *   - between: the two mixed.
  * params.x = 0: the game's texels as they are (nearest, no mipmaps).
+ * The fog (port/video/fog.c, when fog.y > fog.x): each pixel by its own distance on the map from the
+ * viewer (its view-space point turned back by the view's inverse), t^2 (2 - t) of the way from the
+ * fog's start to its end, toward its colour, in full colour (the game's light tables fog each
+ * square through one of 16 levels).
  * SDL_GPU's layout for fragment shaders: textures and samplers in space 2, uniforms in space 3. */
 #ifdef __spirv__
 #define VK(x) [[vk::x]]
@@ -31,6 +35,10 @@ VK(binding(9, 2)) SamplerState s4 : register(s4, space2);
 VK(binding(0, 3))
 cbuffer Look : register(b0, space3) {
     float4 params;
+    float4 fog;         /* start, end (squares), on */
+    float4 fog_colour;
+    float4 inv0, inv1, inv2;    /* the view's inverse: view space to (ey, height, ex) */
+    float4 mz;          /* the view's offset */
 };
 
 struct PSInput {
@@ -38,7 +46,18 @@ struct PSInput {
     VK(location(0)) float2 uv : TEXCOORD0;
     VK(location(1)) float shade : TEXCOORD1;
     VK(location(2)) nointerpolation float2 sel : TEXCOORD2;
+    VK(location(3)) float3 view : TEXCOORD3;
 };
+
+float3 fogged(float3 c, float3 view)
+{
+    if (fog.z < 0.5)
+        return c;
+    float3 p = view - mz.xyz;
+    float2 d2 = float2(dot(inv0.xyz, p), dot(inv2.xyz, p));      /* (ey, ex): squares from the viewer */
+    float t = saturate((length(d2) - fog.x) / max(fog.y - fog.x, 1e-3));
+    return lerp(c, fog_colour.rgb, t * t * (2.0 - t));
+}
 
 int colour_at(int2 t, int layer)
 {
@@ -82,9 +101,9 @@ float4 main(PSInput i) : SV_Target0
     float tpp = sqrt(length(dx) * length(dy));      /* (a low angle stretches one way only) */
     float2 fw = max(abs(dx) + abs(dy), 1e-4);
     if (layer < 0)
-        return float4(lit_colour(-1 - layer, L, lt), 1.0);
+        return float4(fogged(lit_colour(-1 - layer, L, lt), i.view), 1.0);
     if (params.x < 0.5)
-        return float4(lit_colour(colour_at(int2(floor(i.uv)), layer), L, lt), 1.0);
+        return float4(fogged(lit_colour(colour_at(int2(floor(i.uv)), layer), L, lt), i.view), 1.0);
 
     float3 nearc = 0, farc = 0;
     float far_k = saturate(log2(max(tpp, 1e-4)) + 0.5);     /* 0 up to 0.7 texels a pixel, 1 from 1.4 */
@@ -101,5 +120,5 @@ float4 main(PSInput i) : SV_Target0
     }
     if (far_k > 0.0)
         farc = lit_fit(colours.SampleGrad(trilinear, float3(i.uv / 64.0, layer), dx / 64.0, dy / 64.0).rgb, L, lt);
-    return float4(lerp(nearc, farc, far_k), 1.0);
+    return float4(fogged(lerp(nearc, farc, far_k), i.view), 1.0);
 }

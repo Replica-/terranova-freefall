@@ -19,9 +19,10 @@ The same walk in Operation Seagull, frame for frame. Above: the original rendere
 | Hiding what's behind | Drawn far to near (painter's order) | Depth buffer |
 | Precision | 1990s fixed-point screen positions | Floating point |
 | Where it's drawn | The processor (11–18 ms a frame at 4× 3D resolution in the built-in benchmark) | The graphics card |
-| Status | Complete | **Ground only so far.** Sky, objects, water and weather come next |
+| Fog | 16 levels through light tables, a square at a time | Per pixel by real distance, full colour |
+| Status | Complete | **Near and far ground so far.** Objects, water and weather come next |
 
-The GPU ground is experimental for now. It needs Direct3D 12 (DXIL shaders); Vulkan comes later. Turn it on with **O** (the Freefall options), **Display**, **GPU ground: On** (saved as `screen_gpu_ground=on` in `tnfree.ini`). Close up it keeps the game's square texels with smoothed edges; further away it uses full-colour mipmaps with anisotropic filtering, so distant ground doesn't shimmer. It doesn't make the game faster yet: the processor still draws the original picture alongside it, which the game's own logic reads. The speed gain comes once more of the world moves to the card.
+The GPU ground is experimental for now. It needs Direct3D 12 (DXIL shaders); Vulkan comes later. Turn it on with **O** (the Freefall options), **Display**, **GPU ground: On** (saved as `screen_gpu_ground=on` in `tnfree.ini`). Close up it keeps the game's square texels with smoothed edges; further away it uses full-colour mipmaps with anisotropic filtering, so distant ground doesn't shimmer. The far land, which the game draws with a ray caster in screen columns, is built on the card from the map's heights, and the fog is worked out per pixel. Water is still the game's. It doesn't make the game faster yet: the processor still draws the original picture alongside it, which the game's own logic reads. The speed gain comes once more of the world moves to the card.
 
 Every change is checked against a deterministic baseline of all 39 campaign missions (`tools/baseline.py`).
 

@@ -256,11 +256,12 @@ An option that needs another one shows grey until that one is on.
                         the HUD, text, maps and the target's label stay
                         crisp).
     GPU ground          Off or On (experimental): the ground of the main 3D
-                        view drawn by the graphics card, in full colour and
-                        perspective-correct, so its textures no longer swim
-                        as you move; the sky, objects and water are still
-                        the game's.  Needs Direct3D 12.  Not part of the
-                        presets.
+                        view, near and far, drawn by the graphics card, in
+                        full colour and perspective-correct, so its
+                        textures no longer swim as you move, with the fog
+                        worked out for every pixel; the sky, objects and
+                        water are still the game's.  Needs Direct3D 12.
+                        Not part of the presets.
     Filters             (the right column) Screen filters, only how the
                         picture looks:
                           Brightness, Gamma, Contrast, Colour

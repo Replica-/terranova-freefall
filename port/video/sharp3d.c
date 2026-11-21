@@ -1006,6 +1006,8 @@ void port_s3d_render(int slot, void *pview, void *pcam, int mirror)
         if (!slot && !mirror)           /* the GPU ground: the terrain's polygons caught (gpuland.c) */
             port_gl_begin(&f->gl, big.bm.bits, W, (h + 2 * ey) * ky, hc.half_w, hc.half_h);
         ffpipe_29EDB4(&v, &hc);
+        if (port_gl_capturing)
+            port_gl_far();
         port_gl_end();
         if (port_s3d_targ_rec) {
             port_s3d_targ_rec = 0;

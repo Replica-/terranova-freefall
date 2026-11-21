@@ -59,6 +59,15 @@ void thunder_2B2AD8(long a, long b, StripRas *r)
     PATCH(colras_flat_loop, 0x61) = (ulong)r->row;
 }
 
+#ifndef TN_WATCOM_ABI
+/* the GPU ground (port/video/gpuland.c): the far land's pixels noted while it is drawn */
+extern unsigned short *port_gl_shc;
+extern const unsigned char *port_gl_sh_base;
+#define GL_NOTE_FAR(q) do { if (port_gl_shc) port_gl_shc[(q) - port_gl_sh_base] = (unsigned short)(0x100 | *(q)); } while (0)
+#else
+#define GL_NOTE_FAR(q) ((void)0)
+#endif
+
 /* one column: rows y .. top - 1 of the column at column pointer p (one row above row y) */
 static void colras_column(uchar *p, long cnt, ulong *u, uchar *tex, uchar *light, uchar *shade, long row)
 {
@@ -69,6 +78,7 @@ static void colras_column(uchar *p, long cnt, ulong *u, uchar *tex, uchar *light
         c = light[c];
         p += row;
         *p = shade[c];
+        GL_NOTE_FAR(p);
     } while (--cnt);
     *u = uu;
 }
@@ -100,6 +110,7 @@ static void colras_fog_column(uchar *p, long cnt, ulong *u, uchar *tex, uchar *l
                 c = light[c];
                 p += row;
                 *p = o = (dd[y++ & 7] < fr ? b : a)[c];
+                GL_NOTE_FAR(p);
                 *inf = am | (ulong)z[c] << 8 | o;
                 inf += row;
             } while (--cnt);
@@ -113,6 +124,7 @@ static void colras_fog_column(uchar *p, long cnt, ulong *u, uchar *tex, uchar *l
             uu = (uu & ~0xFFul) | ((uu + 1) & 0xFF);
             p += row;
             *p = a[light[c]];
+            GL_NOTE_FAR(p);
         } while (--cnt);
         *u = uu;
         return;
@@ -123,6 +135,7 @@ static void colras_fog_column(uchar *p, long cnt, ulong *u, uchar *tex, uchar *l
         c = light[c];
         p += row;
         *p = (dd[y++ & 7] < fr ? b : a)[c];
+        GL_NOTE_FAR(p);
     } while (--cnt);
     *u = uu;
 }

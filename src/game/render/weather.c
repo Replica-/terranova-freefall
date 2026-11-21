@@ -38,6 +38,7 @@ void port_s3d_drop(long c, const void *bm, long x16, long y16);
 extern uchar **port_sky_refl_row;       /* sky_refl_row, or the sharp view's longer one */
 uchar *port_marks_tex(long tex, int big);   /* port/mods/marks.c: the effects pack's BlastMarks */
 #include "gpuland.h"                    /* port/video/gpuland.c: the GPU ground's capture */
+static const uchar *gl_haze_lt;         /* ... the square's light table before the fog (draw_tri) */
 #endif
 
 #ifndef TN_LINK_ORIGINAL_DATA
@@ -1033,11 +1034,14 @@ static void draw_tri(void *fn, WxTri *t, TerrBin *b)
             f = (port_fog_at((b->x << 16) + 0x8000 - ff_view.x, (b->y << 16) + 0x8000 - ff_view.y) + 0x80) >> 8;
             if (port_fog_ir && grd_canvas->gc.fill_type == 1)   /* the infrared: its colour table */
                 grd_canvas->gc.fill_parm = (long)port_fog_clut((const uchar *)grd_canvas->gc.fill_parm, f);
-            else
+            else {
+                gl_haze_lt = lt;        /* (the GPU ground fogs each pixel itself) */
                 lt = (uchar *)port_fog_ltab(lv, lt, f);
+            }
         }
         g3d_light_tab = grd_screen->ltab = lt;
         WATCOM_CALL(fn, (long)t->v, t->n, b->x, b->y);
+        gl_haze_lt = NULL;
         g3d_light_tab = g;
         grd_screen->ltab = s;
         grd_canvas->gc.fill_parm = clut;
@@ -1276,8 +1280,10 @@ static void gl_catch(TrVert **pts, long n, const uchar *tex, int colour, const u
 {
     PortGlVert v[16];
     long i;
-    if (!port_gl_capturing || !port_s3d_on || n < 3 || n > 16)
-        return;
+    if (!port_gl_capturing || !port_s3d_on || n < 3 || n > 16 || grd_canvas->gc.fill_type)
+        return;                         /* (the infrared: the game's own) */
+    if (gl_haze_lt && lt)               /* the card fogs every pixel itself */
+        lt = gl_haze_lt;
     for (i = 0; i < n; i++) {
         v[i].x = pts[i]->x / 65536.0f;
         v[i].y = pts[i]->y / 65536.0f;

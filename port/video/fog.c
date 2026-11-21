@@ -57,6 +57,7 @@ static long fog_e;                      /* the end (fix, zoomed) */
 static unsigned long fog_e2;            /* (end in 1/64 squares)^2 */
 static unsigned long fog_mul;           /* 2^42 / fog_e2: (d2 * fog_mul) >> 32 is d2 * 1024 / fog_e2 */
 static ushort fog_q[1025];              /* fog by distance^2 / end^2 */
+static double fog_S = 0, fog_E = 1;     /* the start and end the curve has (squares; port_fog_gpu) */
 static long fog_view_b = -1, fog_view_e = -1, fog_view_lvl = -1, fog_view_wx = -1;
 static const uchar *fog_clut;           /* the infrared: the camera's colour table */
 #define IR_HOT 0xB0                     /* the infrared ramp (infrared.c): the hottest colour ... */
@@ -264,6 +265,8 @@ void port_fog_view(const FfCamera *c)
     fog_mul = (unsigned long)((1ull << 42) / fog_e2);
     /* the gentler curve: t^2 (2 - t) from the start to the end, the near land clear longer than
      * an even fade (3/8 fogged half-way), thickening faster toward the end */
+    fog_S = S;
+    fog_E = E;
     for (i = 0; i <= 1024; i++) {
         double d = E * sqrt(i / 1024.0), t = (d - S) / (E - S);
         t = t < 0 ? 0 : t > 1 ? 1 : t;
@@ -283,6 +286,19 @@ long port_fog_at(fix dx, fix dy)
     if (d2 >= fog_e2)
         return 0x1000;
     return fog_q[(unsigned long)(((unsigned long long)d2 * fog_mul) >> 32)];
+}
+
+/* the GPU ground (gpuland.c), which fogs each pixel by its distance: this drawing's fog, its start
+ * and end (squares, the curve t^2 (2 - t) between) and colour (the palette's); 0: none here
+ * (off, or the infrared's, which the game's own drawing keeps) */
+int port_fog_gpu(float *start, float *end, int *colour)
+{
+    if (!port_fog_on || port_fog_ir || fog_fade < 0)
+        return 0;
+    *start = (float)fog_S;
+    *end = (float)fog_E;
+    *colour = (int)(fog_fade & 0xFF);
+    return 1;
 }
 
 /* the last ring the caster draws (squares): everything farther is all fog */
