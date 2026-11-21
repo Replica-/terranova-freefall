@@ -1252,8 +1252,13 @@ SDL_Texture *port_gl_render(SDL_Renderer *r, void *capture, const uint32_t *pal)
     off += 1024;
     memcpy(m + off, c->v, vbytes);
     off += vbytes;
-    for (i = 0; i < c->ntex; i++)       /* the colours and their mipmaps, the rows' fits (below) */
-        make_mips(m + off + (size_t)i * MIP_BYTES, c->tex[i], pal);
+    for (i = 0; i < c->ntex; i++) {     /* the colours and their mipmaps, the rows' fits (below) */
+        /* (made here and copied: each mip is made from the one before, and the transfer buffer is
+         * memory the card reads, slow to read back: 6 ms a picture made in it) */
+        static uint8_t mips[MIP_BYTES];
+        make_mips(mips, c->tex[i], pal);
+        memcpy(m + off + (size_t)i * MIP_BYTES, mips, MIP_BYTES);
+    }
     off += (Uint32)c->ntex * MIP_BYTES;
     {
         double wt[256];

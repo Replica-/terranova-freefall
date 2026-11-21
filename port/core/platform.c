@@ -1583,6 +1583,54 @@ static void ckp_layer(int w, int h, int pitch, const uint8_t *src, const port_s3
     SDL_RenderTexture(renderer, ckp_tex, NULL, &r);
 }
 
+/* FREEFALL_PRESENT_TIMES=1: the display thread's work, part by part, logged each second (the mean and
+ * the most per present, ms) */
+enum { PT_GL, PT_ROWS, PT_CKP, PT_LOCK, PT_UNLOCK, PT_CKALL, PT_PRE, PT_MAPS, PT_LAYER, PT_CKK, PT_HMAKE, PT_HDRAW, PT_KEYED, PT_COMPOSE, PT_AA, PT_DRAW, PT_PRESENT, PT_ALL, PT_N };
+static int pt_on = -1;
+static uint64_t pt_at[PT_N], pt_sum[PT_N], pt_max[PT_N];
+static unsigned long pt_n;
+
+static void pt_start(int k)
+{
+    if (pt_on)
+        pt_at[k] = SDL_GetTicksNS();
+}
+
+static void pt_stop(int k)
+{
+    if (pt_on) {
+        uint64_t d = SDL_GetTicksNS() - pt_at[k];
+        pt_sum[k] += d;
+        pt_max[k] = d > pt_max[k] ? d : pt_max[k];
+    }
+}
+
+static void pt_report(void)
+{
+    static const char *name[PT_N] = { "gpu", "rows", "ckpack", "lock", "unlock", "ckall", "pre", "maps", "layer", "ckkeyed", "hmake", "hdraw", "keyed", "compose", "aa", "draw", "present", "all" };
+    static uint64_t last;
+    uint64_t now = SDL_GetTicksNS();
+    char line[512];
+    int i, n = 0;
+    if (pt_on < 0)
+        pt_on = SDL_getenv("FREEFALL_PRESENT_TIMES") != NULL;
+    if (!pt_on)
+        return;
+    pt_n++;
+    if (!last)
+        last = now;
+    if (now - last < 1000000000ull)
+        return;
+    n += SDL_snprintf(line + n, sizeof line - n, "present times: %lu presents;", pt_n);
+    for (i = 0; i < PT_N; i++)
+        n += SDL_snprintf(line + n, sizeof line - n, " %s %.2f/%.2f", name[i], pt_sum[i] / 1e6 / pt_n, pt_max[i] / 1e6);
+    port_log("%s\n", line);
+    memset(pt_sum, 0, sizeof pt_sum);
+    memset(pt_max, 0, sizeof pt_max);
+    pt_n = 0;
+    last = now;
+}
+
 /* "Helmet motion" with the layered helmet (the pack picture's -parts.png, cockpitpack.c): the
  * frame (ckf_target: the screen, the frame's part of the view and the picture, at rest) is drawn
  * part by part back to front, each moved by its own share of the helmet's move, with its hidden
@@ -1604,6 +1652,9 @@ static struct {
     SDL_Texture *htex;                  /* the hidden art (W x np H) */
     SDL_Texture *btex;                  /* the border ((W + 2 bb) x (H + 2 bb)) */
     unsigned hpal;                      /* ... in these colours */
+    uint8_t used[256];                  /* the colours the hidden art and the border have */
+    uint32_t hcol[256];                 /* ... as they were made in */
+    int filled;                         /* the textures have been made in colours (hcol) */
 } hlp;
 
 /* the renderer is made again (make_renderer): its textures go with the old one */
@@ -1680,6 +1731,7 @@ done:
 }
 
 /* the parts' places for the picture (W x H) as they are; the hidden art's texture in the colours */
+
 static int hlp_make(int W, int H)
 {
     int p, k, np = ckp.np;
@@ -1758,13 +1810,31 @@ static int hlp_make(int W, int H)
             SDL_SetTextureBlendMode(hlp.btex, SDL_BLENDMODE_BLEND);
             SDL_SetTextureScaleMode(hlp.btex, SDL_SCALEMODE_NEAREST);
         }
+        memset(hlp.used, 0, sizeof hlp.used);
+        {
+            size_t i, nh = (size_t)W * H * np, nb = bb ? (size_t)BW * BH : 0;
+            for (i = 0; i < nh; i++)
+                hlp.used[ckp.hidden[i]] = 1;
+            for (i = 0; i < nb; i++)
+                hlp.used[ckp.border[i]] = 1;
+            hlp.used[0] = 0;            /* (see-through) */
+        }
         hlp.hpal = disp32_serial - 1;
+        hlp.filled = 0;
     }
     if (!hlp.htex)
         return 0;
     if (hlp.hpal != disp32_serial) {    /* the hidden art in the colours shown */
         void *pixels;
-        int tpitch, y, x;
+        int tpitch, y, x, c;
+        /* (only when a colour it has changed: the game's palette changes each frame, its animated
+         * colours, and the art made again each time was 4 ms of the display's work) */
+        for (c = 1; c < 256 && (!hlp.used[c] || hlp.hcol[c] == disp32[c]); c++)
+            ;
+        if (c == 256 && hlp.filled) {
+            hlp.hpal = disp32_serial;
+            return 1;
+        }
         if (!SDL_LockTexture(hlp.htex, NULL, &pixels, &tpitch))
             return 0;
         for (y = 0; y < H * np; y++) {
@@ -1783,6 +1853,8 @@ static int hlp_make(int W, int H)
             }
             SDL_UnlockTexture(hlp.btex);
         }
+        memcpy(hlp.hcol, disp32, sizeof hlp.hcol);
+        hlp.filled = 1;
         hlp.hpal = disp32_serial;
     }
     return 1;
@@ -1818,24 +1890,72 @@ static void hlp_offsets(int W, int H, int rows, int *dx, int *dy)
 /* the rectangles rs (n) of the picture's pixels from tex (k: its pixels a picture's pixel, v0:
  * the picture's rows down) to the target moved dx, dy (fx, fy: the target's pixels a picture's
  * pixel, whole ones: each a copy of whole pixels; kx, ky: tex's pixels a picture's pixel) */
-static void hlp_copy(SDL_Texture *tex, const HlRect *rs, int n, int kx, int ky, int v0, int fx, int fy, int dx, int dy)
+/* rectangles (rs, n) as one geometry: of tex (NULL: the draw colour), the picture's pixels kx x ky
+ * of its texels from row v0, to fx x fy of the target's, moved dx, dy.  (A draw for each was
+ * thousands a picture, 6 ms of the display's work while the helmet moved) */
+static void hlp_geometry(SDL_Texture *tex, const HlRect *rs, int n, int kx, int ky, int v0, int fx, int fy,
+                         int dx, int dy)
 {
-    int i;
+    static SDL_Vertex *v;
+    static int *ix, cap;
+    float tw = 1, th = 1;
+    SDL_FColor col = { 1, 1, 1, 1 };
+    int i, k;
+    if (n <= 0 || (tex && (!SDL_GetTextureSize(tex, &tw, &th) || tw <= 0 || th <= 0)))
+        return;
+    if (!tex) {
+        Uint8 r, g, b, a;
+        SDL_GetRenderDrawColor(renderer, &r, &g, &b, &a);
+        col.r = r / 255.0f;
+        col.g = g / 255.0f;
+        col.b = b / 255.0f;
+        col.a = a / 255.0f;
+    }
+    if (n > cap) {
+        SDL_Vertex *nv = realloc(v, sizeof *v * 4 * (size_t)n);
+        int *ni = nv ? realloc(ix, sizeof *ix * 6 * (size_t)n) : NULL;
+        if (nv)
+            v = nv;
+        if (!ni)
+            return;
+        ix = ni;
+        cap = n;
+    }
     for (i = 0; i < n; i++) {
         const HlRect *r = &rs[i];
-        SDL_FRect s = { (float)(r->x0 * kx), (float)((r->y0 + v0) * ky), (float)((r->x1 - r->x0) * kx),
-                        (float)((r->y1 - r->y0) * ky) };
-        SDL_FRect d = { (float)((r->x0 + dx) * fx), (float)((r->y0 + dy) * fy), (float)((r->x1 - r->x0) * fx),
-                        (float)((r->y1 - r->y0) * fy) };
-        SDL_RenderTexture(renderer, tex, &s, &d);
+        float u0 = r->x0 * kx / tw, u1 = r->x1 * kx / tw, t0 = (r->y0 + v0) * ky / th, t1 = (r->y1 + v0) * ky / th;
+        float x0 = (float)((r->x0 + dx) * fx), x1 = (float)((r->x1 + dx) * fx);
+        float y0 = (float)((r->y0 + dy) * fy), y1 = (float)((r->y1 + dy) * fy);
+        SDL_Vertex *q = v + 4 * i;
+        for (k = 0; k < 4; k++)
+            q[k].color = col;
+        q[0].position.x = x0; q[0].position.y = y0; q[0].tex_coord.x = u0; q[0].tex_coord.y = t0;
+        q[1].position.x = x1; q[1].position.y = y0; q[1].tex_coord.x = u1; q[1].tex_coord.y = t0;
+        q[2].position.x = x1; q[2].position.y = y1; q[2].tex_coord.x = u1; q[2].tex_coord.y = t1;
+        q[3].position.x = x0; q[3].position.y = y1; q[3].tex_coord.x = u0; q[3].tex_coord.y = t1;
+        ix[6 * i + 0] = 4 * i;
+        ix[6 * i + 1] = 4 * i + 1;
+        ix[6 * i + 2] = 4 * i + 2;
+        ix[6 * i + 3] = 4 * i;
+        ix[6 * i + 4] = 4 * i + 2;
+        ix[6 * i + 5] = 4 * i + 3;
     }
+    SDL_RenderGeometry(renderer, tex, v, 4 * n, ix, 6 * n);
+}
+
+static void hlp_copy(SDL_Texture *tex, const HlRect *rs, int n, int kx, int ky, int v0, int fx, int fy, int dx, int dy)
+{
+    hlp_geometry(tex, rs, n, kx, ky, v0, fx, fy, dx, dy);
 }
 
 /* the frame (frame: tw x th, the picture's W x H pixels at rest) part by part over the target */
 static void hlp_draw(SDL_Texture *frame, int tw, int th, int rows)
 {
     int W = ckp.pw * ckp.s, H = rows * ckp.s, dx[HELM_PARTS], dy[HELM_PARTS], p, fx = tw / W, fy = th / H;
-    if (!hlp_make(W, H) || fx < 1 || fy < 1 || fx * W != tw || fy * H != th) {
+    pt_start(PT_HMAKE);
+    int made = hlp_make(W, H);
+    pt_stop(PT_HMAKE);
+    if (!made || fx < 1 || fy < 1 || fx * W != tw || fy * H != th) {
         SDL_RenderTexture(renderer, frame, NULL, NULL);
         return;
     }
@@ -1854,18 +1974,12 @@ static void hlp_draw(SDL_Texture *frame, int tw, int th, int rows)
     }
     SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
     for (p = 1; p <= hlp.np; p++) {
-        int i;
         if (hlp.btex)
             hlp_copy(hlp.btex, hlp.r[p][2], hlp.n[p][2], 1, 1, 0, fx, fy, dx[p - 1] - hlp.bb, dy[p - 1] - hlp.bb);
         /* (black under the part first, as the still helmet has: where the frame is see-through
          * over the art, e.g. the black the HUD draws in the timer's box, the 3D drawn taller than
          * the window must not show through) */
-        for (i = 0; i < hlp.n[p][0]; i++) {
-            const HlRect *r = &hlp.r[p][0][i];
-            SDL_FRect d = { (float)((r->x0 + dx[p - 1]) * fx), (float)((r->y0 + dy[p - 1]) * fy),
-                            (float)((r->x1 - r->x0) * fx), (float)((r->y1 - r->y0) * fy) };
-            SDL_RenderFillRect(renderer, &d);
-        }
+        hlp_geometry(NULL, hlp.r[p][0], hlp.n[p][0], 1, 1, 0, fx, fy, dx[p - 1], dy[p - 1]);
         hlp_copy(frame, hlp.r[p][0], hlp.n[p][0], fx, fy, 0, fx, fy, dx[p - 1], dy[p - 1]);
     }
 }
@@ -1899,6 +2013,7 @@ static SDL_Texture *ck_compose(int w, int h, int pitch, const uint8_t *src, cons
          * move apart (hlp_draw) */
         lay = ckp.parts && ckp.np && port_helmet_motion && w <= 320 && h <= 400;
     }
+    pt_start(PT_PRE);
     port_helmet_sway = lay;             /* (sharp3d.c: the view's rows more above and below) */
     one = lay;                          /* (the world, the frame and the targets' layer apart) */
     cw = w + 2 * E;
@@ -2040,7 +2155,9 @@ static SDL_Texture *ck_compose(int w, int h, int pitch, const uint8_t *src, cons
                 SDL_RenderTexture(renderer, ckv_tex, NULL, &vr);
             else {
                 SDL_SetTextureBlendMode(ck_tex, s3d_aa ? aa_blend() : SDL_BLENDMODE_BLEND);
+                pt_start(PT_CKK);
                 draw_keyed(ck_tex, &vr, ck_keyed, 0, 1, 1);
+                pt_stop(PT_CKK);
             }
             ck.view = 1;
             goto pointer;
@@ -2057,7 +2174,11 @@ static SDL_Texture *ck_compose(int w, int h, int pitch, const uint8_t *src, cons
                 SDL_UnlockTexture(ckv_tex);
             pixf = NULL;
         }
-        if (ck_tex && (!one || pixf) && SDL_LockTexture(ck_tex, NULL, &pixels, &tpitch)) {
+        pt_stop(PT_PRE);
+        pt_start(PT_LOCK);
+        int locked = ck_tex && (!one || pixf) && SDL_LockTexture(ck_tex, NULL, &pixels, &tpitch);
+        pt_stop(PT_LOCK);
+        if (locked) {
             {
                 CkRows c;
                 c.f = f;
@@ -2089,9 +2210,13 @@ static SDL_Texture *ck_compose(int w, int h, int pitch, const uint8_t *src, cons
                 c.glm = port_gl == 1 ? port_gl_mask(f->gl, f->ey * ky) : NULL;
                 ck_keyed = c.glm != NULL;
                 tc_prep(f);
+                pt_start(PT_ROWS);
                 port_parallel_display(one ? ck_rows_one : ck_rows, &c, (hh + 15) / 16);
+                pt_stop(PT_ROWS);
             }
+            pt_start(PT_UNLOCK);
             SDL_UnlockTexture(ck_tex);
+            pt_stop(PT_UNLOCK);
             if (one) {
                 SDL_UnlockTexture(ckv_tex);
                 SDL_UnlockTexture(ckb_tex);
@@ -2107,14 +2232,19 @@ static SDL_Texture *ck_compose(int w, int h, int pitch, const uint8_t *src, cons
                 SDL_RenderTexture(renderer, ckv_tex, NULL, &vr);
             else {
                 SDL_SetTextureBlendMode(ck_tex, s3d_aa ? aa_blend() : SDL_BLENDMODE_BLEND);
+                pt_start(PT_CKK);
                 draw_keyed(ck_tex, &vr, ck_keyed, 0, 1, 1);
+                pt_stop(PT_CKK);
             }
             ck.view = 1;
         }
     }
 pointer:
+    pt_start(PT_CKP);
     if (ckp_on)                         /* the cockpit pack's picture over it all */
         ckp_layer(w, h, pitch, src, ck.view ? f : NULL, E, tw, th);
+    pt_stop(PT_CKP);
+    pt_start(PT_MAPS);
     {   /* the cockpit's side screens' maps: over their stretched screens at the right proportions
          * (the picture's columns 1:1), the stretched screen where the HUD drew over the map */
         static int col[4096 + 16];
@@ -2179,6 +2309,8 @@ pointer:
             ckm[s].on = 1;
         }
     }
+    pt_stop(PT_MAPS);
+    pt_start(PT_LAYER);
     if (one || fin) {                   /* the layered helmet: the world, the targets' layer over it,
                                          * the frame's parts over all */
         SDL_FRect fr = { 0, 0, (float)tw, (float)th };
@@ -2193,11 +2325,14 @@ pointer:
          * go over them, as over the 3D; owner, P126) */
         if (one && ck.view)
             SDL_RenderTexture(renderer, ckb_tex, NULL, &vr);
+        pt_start(PT_HDRAW);
         if (lay)
             hlp_draw(ckf_target, tw, th, h);
         else
             SDL_RenderTexture(renderer, ckf_target, NULL, &fr);
+        pt_stop(PT_HDRAW);
     }
+    pt_stop(PT_LAYER);
     if (port_now_us() - ck_cur_seen < 150000 && cursor_tex(&cwid, &chei, &hx, &hy)) {
         int px, py, inview = 0;         /* the game's pointer, or the real one beyond its picture */
         float U;
@@ -2374,8 +2509,10 @@ static SDL_Texture *sharp3d_compose_now(int w, int h, int pitch, const uint8_t *
         fs[i] = f;
         n += f != NULL;
     }
+    pt_start(PT_GL);
     if (port_gl == 1 && fs[0])          /* the GPU ground (gpuland.c): drawn for this very picture */
         port_gl_render(renderer, fs[0]->gl, disp32);
+    pt_stop(PT_GL);
     ck.on = 0;
     if (!n)
         return stretch ? ck_compose(w, h, pitch, src, NULL, NULL, NULL, texture, 1, 1, ex) : NULL;
@@ -2478,7 +2615,9 @@ static SDL_Texture *sharp3d_compose_now(int w, int h, int pitch, const uint8_t *
             c.glm = i == 0 && port_gl == 1 ? port_gl_mask(f->gl, f->ey * ky) : NULL;
             s3d_keyed[i] = c.glm != NULL;
             tc_prep(f);
+            pt_start(PT_ROWS);
             port_parallel_display(s3d_rows, &c, (hh + 15) / 16);
+            pt_stop(PT_ROWS);
         }
         SDL_UnlockTexture(s3d_tex[i]);
     draw:
@@ -2486,11 +2625,19 @@ static SDL_Texture *sharp3d_compose_now(int w, int h, int pitch, const uint8_t *
         r.y = (float)(f->y * ky);
         r.w = (float)hw;
         r.h = (float)hh;
+        pt_start(PT_KEYED);
         draw_keyed(s3d_tex[i], &r, s3d_keyed[i], f->ey * ky, f->h * ky, (f->h + 2 * f->ey) * ky);
+        pt_stop(PT_KEYED);
     }
     SDL_SetRenderTarget(renderer, NULL);
     if (stretch)
-        return ck_compose(w, h, pitch, src, ckf, fs, sm, s3d_target, kx, ky, ex);
+    {
+        SDL_Texture *t;
+        pt_start(PT_CKALL);
+        t = ck_compose(w, h, pitch, src, ckf, fs, sm, s3d_target, kx, ky, ex);
+        pt_stop(PT_CKALL);
+        return t;
+    }
     return s3d_target;
 }
 
@@ -2604,7 +2751,19 @@ static void present(void)
             for (x = 0; x < 256; x++)
                 disp3d[x] = disp32[x] & 0xFEFFFFFFu;
             port_screen_grade_lut(tc_lut, &tc_sat);
-            disp32_serial++;
+            {   /* new colours only when they differ: the game sets its palette again many times a
+                 * second, mostly to the same colours, and each new serial made every picture again
+                 * (the helmet's art alone 4 ms), so the display missed refreshes */
+                static uint32_t was[256];
+                static unsigned grade_was;
+                static int any;
+                if (!any || grade_seen != grade_was || memcmp(was, disp32, sizeof was)) {
+                    memcpy(was, disp32, sizeof was);
+                    grade_was = grade_seen;
+                    any = 1;
+                    disp32_serial++;
+                }
+            }
         }
         if (!texture || tex_w != w || tex_h != h) {
             if (texture)
@@ -2676,12 +2835,17 @@ static void present(void)
             SDL_Texture *sharp;
             if (port_cursor_shown())
                 ck_cur_seen = port_now_us();
+            pt_start(PT_COMPOSE);
             sharp = sharp3d_compose(w, h, pitch, port_video.vram + start, &ex);
+            pt_stop(PT_COMPOSE);
+            pt_start(PT_AA);
             if (sharp && s3d_aa) {      /* Anti-aliasing: on the 3D's pixels, at 3D resolution 2x+ */
                 float sw, sh;
                 if (SDL_GetTextureSize(sharp, &sw, &sh) && sh >= 2 * h)
                     sharp = port_screen_fxaa(renderer, sharp, (int)sw, (int)sh);
             }
+            pt_stop(PT_AA);
+            pt_start(PT_DRAW);
             port_wide_cursor = ck.on;
             if (!ck.view && port_wide_ptr)  /* the wide view is gone: the game's pointer */
                 port_wide_ptr = 0;
@@ -2718,6 +2882,7 @@ static void present(void)
                 port_screen_draw(renderer, sharp ? sharp : texture, w, h, &r);
             }
             port_help_present(renderer, ww, wh, &shown, w, shown_ex, shown_stretched);  /* help.c: H's screen */
+            pt_stop(PT_DRAW);
         }
         if (port_gl == 2) {             /* the GPU ground alone (gpuland.c, testing): in place of the picture */
             const port_s3d_frame *f0 = port_s3d_take(0);
@@ -2765,7 +2930,9 @@ static void present(void)
             SDL_SetAtomicInt(&sync_shot, 0);
         }
     }
+    pt_start(PT_PRESENT);
     SDL_RenderPresent(renderer);
+    pt_stop(PT_PRESENT);
 }
 
 /* the game's thread (lockstep.c): save the whole window as shown, with the frame drawn so far,
@@ -3515,7 +3682,10 @@ int port_run(game_entry fn, int argc, char **argv)
         }
         SDL_SetAtomicInt(&in_present, 1);
         if (!SDL_GetAtomicInt(&game_ending)) {
+            pt_start(PT_ALL);
             present();
+            pt_stop(PT_ALL);
+            pt_report();
             SDL_SetAtomicInt(&in_present, 0);
             display_refreshed(display_hz());
         } else {                        /* the game's exit functions run: no drawing (P113) */
