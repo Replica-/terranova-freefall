@@ -594,6 +594,7 @@ static int ml_shift;                    /* Mouselook (hold) held: the pointer is
 int port_gimbal;                        /* gimbal mode: the body keeps turning to the view */
 static int ml_shift_mission(void);
 static void ml_update(void);
+static void ml_motion(uint64_t ns, float dx, float dy);
 
 static void phys_event(int k, int down)
 {
@@ -726,6 +727,7 @@ static SDL_BlendMode aa_blend(void)
  * the screen), the pointer drawn there and its bitmap */
 static int wide_nudge;
 static int ml_active;                   /* mouselook has the mouse (below) */
+static int ml_test;                     /* FREEFALL_ML_TEST: a test thread's mouse (no focus needed) */
 static SDL_Texture *wide_cur_tex;
 #define BMT_MONO_ 1                     /* the game's bitmap types (2d.h) */
 #define BMT_FLAT8_ 2
@@ -3034,6 +3036,20 @@ static void present(void)
     pace_wait();
     pt_start(PT_PRESENT);
     SDL_RenderPresent(renderer);
+    {   /* FREEFALL_VSYNC_BLOCK=1 (testing a hidden window): the present returns when its refresh
+         * begins, as a full screen's flip does, not at once */
+        static int vb = -1;
+        if (vb < 0)
+            vb = SDL_getenv("FREEFALL_VSYNC_BLOCK") != NULL;
+        if (vb && pace_due_set && disp_per_us > 0) {
+            uint64_t now = port_now_us(), at;
+            SDL_LockMutex(disp_mutex);
+            at = disp_phase + (uint64_t)((long)(pace_due - disp_ticks) > 0 ? (pace_due - disp_ticks) * disp_per_us : 0);
+            SDL_UnlockMutex(disp_mutex);
+            if (at > now && at - now < 50000)
+                port_sleep_us(at - now);
+        }
+    }
     pt_stop(PT_PRESENT);
 }
 
@@ -3234,6 +3250,58 @@ static volatile int ml_map;             /* the map fills the main view (M): no m
 
 #define ML_UNITS 18.0f                  /* angle units per mouse count at 100% (about 0.1 degree) */
 
+/* FREEFALL_ML_TIMES=1: how evenly the frames share the mouse, logged each second (the turn each
+ * frame took: mean, least, most, the frames off the mean by a quarter or more, and the longest
+ * the display thread went without reading events, ms) */
+static int mlt_on = -1;
+static volatile uint64_t mlt_pump_us, mlt_gap_us;
+
+static void ml_times(float x)
+{
+    static uint64_t last;
+    static double sum, lo, hi, xs[256];
+    static int n;
+    uint64_t now = port_now_us();
+    int i, off = 0;
+    if (mlt_on < 0)
+        mlt_on = SDL_getenv("FREEFALL_ML_TIMES") != NULL;
+    if (!mlt_on)
+        return;
+    if (n < 256)
+        xs[n++] = x;
+    sum += x;
+    lo = n == 1 || x < lo ? x : lo;
+    hi = n == 1 || x > hi ? x : hi;
+    if (!last)
+        last = now;
+    if (now - last < 1000000)
+        return;
+    for (i = 0; i < n; i++)
+        off += SDL_fabs(xs[i] - sum / n) >= SDL_fabs(sum / n) / 4;
+    port_log("mouse times: %d frames, turn %.0f (%.0f to %.0f), %d off by 25%%+; events read %.1f ms apart at most\n",
+             n, sum / n, lo, hi, off, mlt_gap_us / 1000.0);
+    sum = 0;
+    n = 0;
+    mlt_gap_us = 0;
+    last = now;
+}
+
+/* FREEFALL_ML_TEST=<counts>: a thread moves the mouse right that many counts a millisecond while
+ * mouselook has it, through SDL's event queue as its raw input thread does (testing without a mouse) */
+static int SDLCALL ml_test_thread(void *arg)
+{
+    int dx = (int)(intptr_t)arg;
+    for (;;) {                          /* (until the process ends) */
+        SDL_Event ev;
+        SDL_zero(ev);
+        ev.type = SDL_EVENT_MOUSE_MOTION;
+        ev.motion.xrel = (float)dx;
+        if (ml_active)
+            SDL_PushEvent(&ev);
+        port_sleep_us(1000);
+    }
+}
+
 /* returns 1 in head mode (F then turns the player to face the view); map: the map fills the
  * main view, so the pointer is free until it closes */
 int port_mouselook_take(int *turn, int *look, int cx, int cy, int map)
@@ -3244,6 +3312,17 @@ int port_mouselook_take(int *turn, int *look, int cx, int cy, int map)
         int i, k = 0;
         per = per < 2000 ? 2000 : per > 20000 ? 20000 : per;
         cut = SDL_GetTicksNS() - per * 1000;
+        if (ml_active) {
+            /* the moves still in SDL's queue (its raw input thread puts them there as they come):
+             * the display thread reads events once a picture, after its present, which waits for
+             * the flip on a full screen, so a frame starting before that read took none of the
+             * moves since the last one and the next frame twice as many (P146) */
+            SDL_Event ev[64];
+            int n;
+            while ((n = SDL_PeepEvents(ev, 64, SDL_GETEVENT, SDL_EVENT_MOUSE_MOTION, SDL_EVENT_MOUSE_MOTION)) > 0)
+                for (i = 0; i < n; i++)
+                    ml_motion(ev[i].motion.timestamp, ev[i].motion.xrel, ev[i].motion.yrel);
+        }
         SDL_LockMutex(ml_mutex);
         for (i = 0; i < ml_n; i++) {
             if (ml_moves[i].ns <= cut) {
@@ -3255,6 +3334,7 @@ int port_mouselook_take(int *turn, int *look, int cx, int cy, int map)
         ml_n = k;
         ml_frac_x += x;
         ml_frac_y += y;
+        ml_times(x);
         *turn = (int)ml_frac_x;
         *look = (int)ml_frac_y;
         ml_frac_x -= *turn;
@@ -3311,7 +3391,7 @@ static void ml_update(void)
     uint64_t now = port_now_us();
     int in_mission = ml_seen_us && now - ml_seen_us < 250000;
     int want = port_mouselook && !ml_freed && !ml_shift && in_mission &&
-               (SDL_GetWindowFlags(window) & SDL_WINDOW_INPUT_FOCUS);
+               (ml_test || (SDL_GetWindowFlags(window) & SDL_WINDOW_INPUT_FOCUS));
 
     if (port_options_open || ml_map || port_game_paused())     /* the pause shows the pointer */
         want = 0;
@@ -3760,6 +3840,14 @@ int port_run(game_entry fn, int argc, char **argv)
     if (!th)
         port_fatal("Cannot start the game thread: %s\n", SDL_GetError());
     SDL_DetachThread(th);
+    {
+        const char *t = SDL_getenv("FREEFALL_ML_TEST");
+        SDL_Thread *mt = t && atoi(t) ? SDL_CreateThread(ml_test_thread, "mltest", (void *)(intptr_t)atoi(t)) : NULL;
+        if (mt) {
+            ml_test = 1;
+            SDL_DetachThread(mt);
+        }
+    }
     /* the window's thread ahead of the drawing threads, which have every core but one: it waited
      * for a turn and missed refreshes (P59) */
     SDL_SetCurrentThreadPriority(SDL_THREAD_PRIORITY_HIGH);
@@ -3767,6 +3855,12 @@ int port_run(game_entry fn, int argc, char **argv)
     while (!game_done) {
         SDL_Event e;
         uint64_t next = port_now_us() + 16000;
+        if (mlt_on > 0) {
+            uint64_t now = port_now_us();
+            if (mlt_pump_us && now - mlt_pump_us > mlt_gap_us)
+                mlt_gap_us = now - mlt_pump_us;
+            mlt_pump_us = now;
+        }
         while (SDL_PollEvent(&e))
             handle_event(&e);
         if (script)
