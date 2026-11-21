@@ -1,5 +1,7 @@
 # Terra Nova: Freefall
 
+**Enhancing into GPU mode with various particle and weather effects, and removing texture wobble.**
+
 > **About this fork.** This fork aims to rebuild the 3D world with GPU rendering: full colour, with no 256-colour palette, and better particle and weather effects. The original project is [Cyber1on/terranova-freefall](https://github.com/Cyber1on/terranova-freefall).
 
 **Terra Nova: Strike Force Centauri** (Looking Glass Technologies, 1996) for modern Windows, built from a complete decompilation of the game into C.

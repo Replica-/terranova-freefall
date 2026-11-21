@@ -4,6 +4,25 @@
     "version": "0.2.0",
     "configurations": [
         {
+            // no debugger: full speed.  gdb costs a third of the frame rate or more (every divide
+            // trap and thread goes through it), and cppdbg's "Run Without Debugging" still uses gdb.
+            // node-terminal only runs the command in the terminal; it attaches to Node.js alone.
+            "name": "Terra Nova: Freefall (release)",
+            "type": "node-terminal",
+            "request": "launch",
+            "preLaunchTask": "build tnfree",
+            "cwd": "${workspaceFolder}/build",
+            "command": "& .\\tnfree.exe --game 'D:\\Games\\Terra Nova Strike Force Centauri\\TN' --cd 'D:\\Games\\Terra Nova Strike Force Centauri\\CD\\TNF108.cue'"
+        },
+        {
+            "name": "Terra Nova: Freefall (release, start at mission 3)",
+            "type": "node-terminal",
+            "request": "launch",
+            "preLaunchTask": "build tnfree",
+            "cwd": "${workspaceFolder}/build",
+            "command": "& .\\tnfree.exe --game 'D:\\Games\\Terra Nova Strike Force Centauri\\TN' --cd 'D:\\Games\\Terra Nova Strike Force Centauri\\CD\\TNF108.cue' --mission 3"
+        },
+        {
             "name": "Terra Nova: Freefall (debug)",
             "type": "cppdbg",
             "request": "launch",

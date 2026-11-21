@@ -17,7 +17,10 @@
  * whole data object, the screen and the palette) is appended to the file FREEFALL_LOCKSTEP;
  * after FREEFALL_LOCKSTEP_FRAMES frames the program quits.
  *
- *   FREEFALL_LOCKSTEP=file           turns lockstep on; the frame dumps go there
+ *   FREEFALL_LOCKSTEP=file           turns lockstep on; the frame dumps go there ("-": no dumps)
+ *   FREEFALL_LOCKSTEP_SHOTS=n,n,...  the whole window as shown saved at the start of these frames
+ *                                    (FREEFALL_LOCKSTEP_SHOT=prefix, + "fNNNNN.bmp"), then the
+ *                                    program quits
  *   FREEFALL_LOCKSTEP_MISSION=n      mission to start (default 1; 0 = stay in the shell)
  *   FREEFALL_LOCKSTEP_FROM=n         first frame to dump (default 2, where frame.py's mission
  *                                    snapshot is taken)
@@ -65,6 +68,8 @@ static long mission = 1, dump_from = 2, dump_frames = 50;
 static char *input;
 static unsigned long nframe;
 static long heap_every;
+static const char *shots, *shot_prefix;    /* FREEFALL_LOCKSTEP_SHOTS, FREEFALL_LOCKSTEP_SHOT */
+static uint64_t shots_t0;
 static int cmp_heap;                    /* the comparison's heap: fill bytes, own allocator (not the benchmark) */
 static void heap_init(void);
 static void write_heap(void);
@@ -78,6 +83,7 @@ static long tpf = TICKS_PER_FRAME;      /* the clock's ticks a frame */
 #define SHELL_THREAD    0x36F4B4
 #define MISSION_NO      0x359708        /* script engine variable 7 */
 #define IN_MISSION      0x35972E        /* game_in_mission (byte): cleared at the mission's end */
+#define WEATHER         0x35CADA        /* game_35CADA (byte): 0 rain, 1 snow, 0xFF none */
 #define RES_DESC        0x446BE8        /* gResDesc */
 #define KBD_LOWMEM      0x45D62C        /* kbd_lowmem_start */
 #define F_SCRIPT_START  0x2E7FF4
@@ -310,11 +316,15 @@ void port_lockstep_init(void)
     if (!s || !*s)
         return;
     port_lockstep = 1;
-    cmp_heap = 1;
-    dump = fopen(s, "wb");
-    if (!dump)
-        port_fatal("lockstep: cannot write %s\n", s);
-    write_map(s);
+    if (strcmp(s, "-")) {               /* "-": no dumps (the shots below only) */
+        cmp_heap = 1;
+        dump = fopen(s, "wb");
+        if (!dump)
+            port_fatal("lockstep: cannot write %s\n", s);
+        write_map(s);
+    }
+    shots = getenv("FREEFALL_LOCKSTEP_SHOTS");
+    shot_prefix = getenv("FREEFALL_LOCKSTEP_SHOT");
     if ((s = getenv("FREEFALL_LOCKSTEP_MISSION")) != NULL) mission = atol(s);
     if ((s = getenv("FREEFALL_LOCKSTEP_FROM")) != NULL) dump_from = atol(s);
     if ((s = getenv("FREEFALL_LOCKSTEP_FRAMES")) != NULL) dump_frames = atol(s);
@@ -328,10 +338,46 @@ void port_lockstep_init(void)
     port_log("lockstep: mission %ld, frames %ld..%ld\n", mission, dump_from, dump_from + dump_frames - 1);
 }
 
+void port_shot_window_sync(const char *name);  /* platform.c */
+
+/* FREEFALL_LOCKSTEP_SHOTS: the window as shown at the start of the listed frames (the picture
+ * of the frame before), then the end after the last */
+static void take_shots(void)
+{
+    const char *s = shots;
+    long f, last = -1;
+    char *end;
+    while (*s) {
+        f = strtol(s, &end, 10);
+        if (end == s)
+            break;
+        if ((unsigned long)f == nframe) {
+            char name[1100];
+            snprintf(name, sizeof name, "%sf%05ld.bmp", shot_prefix ? shot_prefix : "", f);
+            port_shot_window_sync(name);
+        }
+        if (f > last)
+            last = f;
+        s = *end == ',' ? end + 1 : end;
+    }
+    if (last >= 0 && (long)nframe >= last) {
+        /* the frames run as fast as they are drawn: their time is the mission's drawing cost
+         * (the shots' waits are a few ms each); the weather 0 rain, 1 snow, 255 none (weather.c) */
+        double sec = (port_now_us() - shots_t0) / 1e6;
+        port_log("lockstep: shots done, %lu frames in %.1f s (%.2f ms a frame), weather %u\n", nframe, sec,
+                 nframe ? sec * 1000 / nframe : 0.0, *(volatile unsigned char *)port_ptr(WEATHER));
+        port_exit(0);
+    }
+}
+
 /* GameTimeFrame, first thing (instead of the frame rate limit) */
 void port_lockstep_frame(void)
 {
     static int was_in;
+    if (nframe == 0)
+        shots_t0 = port_now_us();
+    if (shots)
+        take_shots();
     if (nframe == 0 && dump)
         write_stack_range();
     if (mission && nframe == 0)

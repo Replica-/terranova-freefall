@@ -771,6 +771,8 @@ static int shot_window;                 /* FREEFALL_SHOT_WINDOW=1: every shot is
 static const char *shot_prefix;
 static uint64_t shot_every, shot_next;
 static int shot_count;
+static SDL_AtomicInt sync_shot;         /* port_shot_window_sync: pictures to draw before the shot */
+static char sync_shot_name[1100];
 
 static void update_palette(void)
 {
@@ -2505,9 +2507,9 @@ static void fps_meter(int ww, int wh)
         s--;
     bg.w = (SDL_strlen(line) * 8 + 8) * s;
     bg.h = 12 * s;
-    bg.x = SDL_floorf(dst_rect.x + (dst_rect.w - bg.w) / 2);
-    /* the game's rows (of 400, the same place in 320x200): below the bars or the compass */
-    bg.y = dst_rect.y + (port_s3d_stretch ? dst_rect.h * (port_hud_goggles() ? 41 : 44) / 400 : 2 * s);
+    /* the window's top right corner */
+    bg.x = SDL_floorf(ww - bg.w - 4 * s);
+    bg.y = 4 * s;
     SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
     SDL_SetRenderDrawColor(renderer, 0, 0, 0, 170);
     SDL_RenderFillRect(renderer, &bg);
@@ -2686,8 +2688,34 @@ static void present(void)
             } else
                 save_shot(w, h);
         }
+        /* a lockstep shot (port_shot_window_sync): the second picture drawn since the request,
+         * so the window shows the frame the game thread stopped after */
+        if (SDL_GetAtomicInt(&sync_shot) > 1)
+            SDL_AddAtomicInt(&sync_shot, -1);
+        else if (SDL_GetAtomicInt(&sync_shot) == 1) {
+            SDL_Surface *ws = SDL_RenderReadPixels(renderer, NULL);
+            if (!ws || !SDL_SaveBMP(ws, sync_shot_name))
+                port_log("shot: cannot write %s (%s)\n", sync_shot_name, SDL_GetError());
+            SDL_DestroySurface(ws);
+            SDL_SetAtomicInt(&sync_shot, 0);
+        }
     }
     SDL_RenderPresent(renderer);
+}
+
+/* the game's thread (lockstep.c): save the whole window as shown, with the frame drawn so far,
+ * to name (BMP), and wait until it is saved */
+void port_shot_window_sync(const char *name)
+{
+    uint64_t until = port_now_us() + 10000000;     /* (a window that draws nothing: go on) */
+    snprintf(sync_shot_name, sizeof sync_shot_name, "%s", name);
+    SDL_SetAtomicInt(&sync_shot, 2);
+    while (SDL_GetAtomicInt(&sync_shot) && port_now_us() < until)
+        SDL_Delay(1);
+    if (SDL_GetAtomicInt(&sync_shot)) {
+        port_log("shot: the window drew nothing, %s not saved\n", name);
+        SDL_SetAtomicInt(&sync_shot, 0);
+    }
 }
 
 /* the pointer over the main view's wide picture beyond the game's own (sharp3d.h), at column b
@@ -3387,8 +3415,10 @@ int port_run(game_entry fn, int argc, char **argv)
         }
         if (debug_ticks && port_now_us() > debug_next) {
             extern unsigned long tn_ticks, game_frame, game_frame_dt;
+            extern volatile unsigned long port_div_traps;   /* divtrap.c: each one a trip through a debugger */
             debug_next = port_now_us() + 1000000;
-            port_log("tick %lu frame %lu dt %lu\n", tn_ticks, game_frame, game_frame_dt);
+            port_log("tick %lu frame %lu dt %lu div traps %lu\n", tn_ticks, game_frame, game_frame_dt,
+                     port_div_traps);
         }
         if (port_quit_requested && !quit_at)
             quit_at = port_now_us() + 3000000;

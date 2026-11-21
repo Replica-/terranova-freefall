@@ -156,7 +156,7 @@ The left column:
   Music & Movies      Music, music pack, smooth videos, movie size
   Mods                Mods (zip files) from the Mods folder
   Show FPS            Game and display frames a second and the 3D drawing
-                      time, under the health and energy bars (also a key
+                      time, in the window's top right corner (also a key
                       you can set in Key bindings).
 
 What the presets set (Fullscreen, Mouse sensitivity, Invert mouse, keys,

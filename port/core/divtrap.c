@@ -97,6 +97,10 @@ static int decode(const Regs *r, const uint8_t *p, int *is_idiv, int *size, int3
     return (int)(p - s);
 }
 
+/* divide errors the CPU raised (each one a trip through a debugger, when there is one; the
+ * 64-bit divisions find theirs without one: idiv64.c) */
+volatile unsigned long port_div_traps;
+
 /* the original's divide-error entry stub counts every fault in the dword at 0x35F464 */
 void port_count_div_fault(void)
 {
@@ -112,6 +116,7 @@ static int fix_divide(Regs *r)
     len = decode(r, ip, &is_idiv, &size, &divisor);
     if (!len)
         return 0;
+    port_div_traps++;
     port_count_div_fault();
     if (!is_idiv) {
         /* the original sets al, dl, then ax, dx, then falls through to eax, edx for every size */
