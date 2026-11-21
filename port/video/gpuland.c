@@ -109,7 +109,8 @@ typedef struct {
     size_t otex_at[OTEX_MAX];
     uint8_t *opool;                     /* their texels (OPOOL) */
     size_t opool_used;
-    uint8_t *mask;                      /* W x H: 1 where the finished picture shows the ground */
+    uint16_t *mask;                     /* W x H: what the 3D shows (1 the ground, 2 an object, 4 an effect
+                                         * over it) << 8 | the canvas's colour then (port_gl_mask) */
     size_t mask_n;
     const uint8_t *canvas;
 } Capture;
@@ -152,7 +153,7 @@ void port_gl_begin(void **slot, const uint8_t *canvas, int W, int H, long half_w
     }
     if (n > c->mask_n) {
         free(c->mask);
-        c->mask = malloc(n);
+        c->mask = malloc(n * sizeof *c->mask);
         c->mask_n = c->mask ? n : 0;
     }
     c->canvas = canvas;
@@ -335,11 +336,12 @@ void port_gl_end(void)
     if (c->mask) {                      /* the ground: drawn by the terrain, not drawn over since */
         size_t i, n = (size_t)c->W * c->H;
         for (i = 0; i < n; i++)
-            c->mask[i] = (sh_buf[i] & 0x300) && (uint8_t)sh_buf[i] == c->canvas[i] ? (uint8_t)(sh_buf[i] >> 8 & 3) : 0;
+            c->mask[i] = (uint16_t)(((sh_buf[i] & 0x300) && (uint8_t)sh_buf[i] == c->canvas[i] ? (sh_buf[i] & 0x300) : 0) |
+                                    c->canvas[i]);
         if (fx_used)                    /* an effect over it: nothing drawn there since (4) */
             for (i = 0; i < n; i++)
                 if ((fxsh_buf[i] & 0x100) && (uint8_t)fxsh_buf[i] == c->canvas[i])
-                    c->mask[i] |= 4;
+                    c->mask[i] |= 0x400;
     }
     c->serial = ++serial;
     port_gl_capturing = 0;
@@ -1472,7 +1474,7 @@ SDL_Texture *port_gl_render(SDL_Renderer *r, void *capture, const uint32_t *pal)
     return shown;
 }
 
-const uint8_t *port_gl_mask(void *capture, int row)
+const uint16_t *port_gl_mask(void *capture, int row)
 {
     const Capture *c = capture;
     if (!port_gl || broken || !c || !c->mask || !shown || c->serial != drawn_serial || row < 0 || row >= c->H)

@@ -989,7 +989,7 @@ typedef struct {
     int eyk;                            /* the picture's rows above the view's (f->ey * ky) */
     int sh;                             /* the screen's rows */
     int lay;                            /* the layered helmet (its parts: ckp.parts) */
-    const uint8_t *glm;                 /* the GPU ground's mask, as high (gpuland.c); NULL none */
+    const uint16_t *glm;                /* the GPU ground's mask, as high (gpuland.c); NULL none */
 } CkRows;
 
 /* the GPU ground (gpuland.c): the view's pixels that show the ground keep their colour, with the
@@ -1068,7 +1068,7 @@ static void ck_rows(void *arg, int part, int thread)
         const uint8_t *hm = f->hudm ? f->hudm + (size_t)ly * f->w : NULL;
         const uint32_t *p3 = (s3d_aa || port_gl) && !f->map ? disp3d : disp32;     /* the 3D's colours */
         const uint32_t *tc = f->tc && f->tc_rows[Yv] && !rw->ir ? f->tc + (ptrdiff_t)Yv * hw : NULL;
-        const uint8_t *gm = rw->glm ? rw->glm + (ptrdiff_t)Yv * hw : NULL;  /* the GPU ground (gpuland.c) */
+        const uint16_t *gm = rw->glm ? rw->glm + (ptrdiff_t)Yv * hw : NULL;  /* the GPU ground (gpuland.c) */
         uint32_t a3 = p3[0] & 0xFF000000u;
         uint32_t *d = (uint32_t *)((uint8_t *)pixels + (size_t)Y * tpitch);
         const port_s3d_frame *gr[PORT_S3D_SLOTS];
@@ -1133,8 +1133,8 @@ static void ck_rows(void *arg, int part, int thread)
                 else if (!dm && inv && scr[b] != low[b] &&
                          scr[b] != ckp.art[(size_t)sy * rw->sw + f->x + b])
                     d[X] = 0xFF000000u | disp32[scr[b]];
-                else if (gm && gm[X])
-                    d[X] = PORT_GL_MARK(tc && tc[X] ? tc_px(tc_faded(tc[X], hi[X]), a3) : p3[hi[X]], gm[X]);
+                else if (gm && PORT_GL_K(gm[X], hi[X]))
+                    d[X] = PORT_GL_MARK(tc && tc[X] ? tc_px(tc_faded(tc[X], hi[X]), a3) : p3[hi[X]], PORT_GL_K(gm[X], hi[X]));
                 else if (tc && tc[X])
                     d[X] = tc_px(tc_faded(tc[X], hi[X]), a3);
                 else
@@ -1146,14 +1146,14 @@ static void ck_rows(void *arg, int part, int thread)
             else if (b >= 0 && b < f->w && win[b] && scr[b] != low[b] &&
                      !(tip && b + f->x >= f->tip_x0 && b + f->x <= f->tip_x1))
                 d[X] = 0xFF000000u | disp32[scr[b]];    /* the HUD drew here */
-            else if (gm && gm[X])   /* the GPU ground */
-                d[X] = PORT_GL_MARK(tc && tc[X] ? tc_px(tc_faded(tc[X], hi[X]), a3) : p3[hi[X]], gm[X]);
+            else if (gm && PORT_GL_K(gm[X], hi[X]))     /* the GPU ground */
+                d[X] = PORT_GL_MARK(tc && tc[X] ? tc_px(tc_faded(tc[X], hi[X]), a3) : p3[hi[X]], PORT_GL_K(gm[X], hi[X]));
             else if (tc && tc[X])   /* True colour */
                 d[X] = tc_px(tc_faded(tc[X], hi[X]), a3);
             else
                 d[X] = p3[hi[X]];
         }
-        if (s3d_aa && f->lab_n)
+        if ((s3d_aa || port_gl) && f->lab_n)     /* (GPU rendering: no weather over the label either) */
             label_alpha(f, Y, d);
     }
 }
@@ -1195,7 +1195,7 @@ static void ck_rows_one(void *arg, int part, int thread)
         const uint8_t *hm = f->hudm ? f->hudm + (size_t)ly * f->w : NULL;
         const uint32_t *p3 = (s3d_aa || port_gl) && !f->map ? disp3d : disp32;     /* the 3D's colours */
         const uint32_t *tc = f->tc && f->tc_rows[Yv] && !rw->ir ? f->tc + (ptrdiff_t)Yv * hw : NULL;
-        const uint8_t *gm = rw->glm ? rw->glm + (ptrdiff_t)Yv * hw : NULL;  /* the GPU ground (gpuland.c) */
+        const uint16_t *gm = rw->glm ? rw->glm + (ptrdiff_t)Yv * hw : NULL;  /* the GPU ground (gpuland.c) */
         uint32_t a3 = p3[0] & 0xFF000000u;
         uint32_t *dw = (uint32_t *)((uint8_t *)rw->pixels + (size_t)Y * rw->tpitch);
         uint32_t *df = (uint32_t *)((uint8_t *)rw->pixf + (size_t)Y * rw->fpitch);
@@ -1210,7 +1210,7 @@ static void ck_rows_one(void *arg, int part, int thread)
             int gy = f->y + (Yv < 0 ? -((-Yv + ky - 1) / ky) : Yv / ky);
             for (X = 0; X < hw; X++) {
                 int gx = rw->xh0 + X / kx - E, C = rw->xh0 + X / kx;
-                dw[X] = GL_PICK(gm ? gm[X] : 0, tc && tc[X] ? tc_px(tc_faded(tc[X], hi[X]), a3) : p3[hi[X]]);
+                dw[X] = GL_PICK(gm ? PORT_GL_K(gm[X], hi[X]) : 0, tc && tc[X] ? tc_px(tc_faded(tc[X], hi[X]), a3) : p3[hi[X]]);
                 /* (only in the helmet's parts: in its window, the 3D) */
                 /* (and in the pack's holes where the screen is not the game's art: what the HUD
                  * drew there, the pirate's weapon box in the 320 x 200 cockpit above the view) */
@@ -1234,7 +1234,7 @@ static void ck_rows_one(void *arg, int part, int thread)
             int b = l1[X], C = rw->xh0 + X / kx, gx = C - E;
             int on = gx >= 0 && gx < sw, inv = b >= 0 && b < f->w, inc = C >= 0 && C < cw;
             const port_s3d_frame *g = NULL;
-            uint32_t w3 = GL_PICK(gm ? gm[X] : 0, tc && tc[X] ? tc_px(tc_faded(tc[X], hi[X]), a3) : p3[hi[X]]), fr = 0;
+            uint32_t w3 = GL_PICK(gm ? PORT_GL_K(gm[X], hi[X]) : 0, tc && tc[X] ? tc_px(tc_faded(tc[X], hi[X]), a3) : p3[hi[X]]), fr = 0;
             db[X] = hud && hud[X / kx] && !(hm && inv && hm[b]) ? 0xFF000000u | disp32[hud[X / kx]] : 0;
             if (hud_over_3d(rw, X, Yv, &hc)) {
                 if (rw->lay && inc && sy >= 0 && sy < rw->sh &&
@@ -1282,7 +1282,7 @@ static void ck_rows_one(void *arg, int part, int thread)
             dw[X] = w3;
             df[X] = fr;
         }
-        if (s3d_aa && f->lab_n)
+        if ((s3d_aa || port_gl) && f->lab_n)     /* (GPU rendering: no weather over the label either) */
             label_alpha(f, Yv, dw);
     }
 }
@@ -2237,7 +2237,7 @@ typedef struct {
     const uint8_t *src;
     void *pixels;
     int pitch, tpitch, hw, hh, kx, ky, paused, ir, nomask, cx0, cy0, cx1, cy1;
-    const uint8_t *glm;                 /* the GPU ground's mask, as high (gpuland.c); NULL none */
+    const uint16_t *glm;                /* the GPU ground's mask, as high (gpuland.c); NULL none */
 } S3dRows;
 
 static void s3d_rows(void *arg, int part, int thread)
@@ -2248,8 +2248,8 @@ static void s3d_rows(void *arg, int part, int thread)
     void *pixels = rw->pixels;
     int pitch = rw->pitch, tpitch = rw->tpitch, hw = rw->hw, kx = rw->kx, ky = rw->ky, paused = rw->paused;
     int s3d_nomask = rw->nomask, cx0 = rw->cx0, cy0 = rw->cy0, cx1 = rw->cx1, cy1 = rw->cy1;
-    const uint8_t *glm = rw->glm;      /* the GPU ground (gpuland.c): 1 where it goes, as high */
-#define GLK(h) (glm ? glm[(h) - f->high] : 0)
+    const uint16_t *glm = rw->glm;     /* the GPU ground (gpuland.c): what goes where, as high */
+#define GLK(h) (glm ? PORT_GL_K(glm[(h) - f->high], *(h)) : 0)
     int y0 = part * 16, y1 = y0 + 16 < rw->hh ? y0 + 16 : rw->hh, Y;
     (void)thread;
     for (Y = y0; Y < y1; Y++) {
@@ -2293,7 +2293,7 @@ static void s3d_rows(void *arg, int part, int thread)
         }
         for (k = 0; k < f->ex; k++, hi++, tc = tc ? tc + 1 : NULL)
             *d++ = GL_PICK(GLK(hi), tc && *tc ? tc_px(tc_faded(*tc, *hi), a3) : p3[*hi]);
-        if (s3d_aa && f->lab_n)
+        if ((s3d_aa || port_gl) && f->lab_n)     /* (GPU rendering: no weather over the label either) */
             label_alpha(f, Y, d0);
     }
 }

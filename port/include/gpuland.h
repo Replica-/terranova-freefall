@@ -76,10 +76,13 @@ struct SDL_Renderer;
 struct SDL_Texture *port_gl_render(struct SDL_Renderer *r, void *capture, const uint32_t *pal);
 void port_gl_shutdown(void);
 
-/* the display's thread, after port_gl_render drew the capture: what the picture shows (W x H,
- * 1 the ground, 2 an object the card drew, 0 the game's own), from row `row` of the canvas on; NULL
- * when the card has no picture of it */
-const uint8_t *port_gl_mask(void *capture, int row);
+/* the display's thread, after port_gl_render drew the capture: what the picture's 3D showed (W x
+ * H: 1 the ground, 2 an object the card drew, 0 the game's own; 4 an effect over it) << 8 | the
+ * canvas's colour then, from row `row` of the canvas on; NULL when the card has no picture of it.
+ * A pixel whose colour has changed since (the target's label, a HUD picture drawn over the view
+ * after the 3D) is the game's */
+const uint16_t *port_gl_mask(void *capture, int row);
+#define PORT_GL_K(m, c) ((unsigned char)(m) == (c) ? (m) >> 8 : 0)     /* the mask's kind, if still c */
 
 /* the alpha the display gives the pixels where the ground goes (their colour kept; an object's
  * one less: PORT_GL_MARK_A - 1), and the
