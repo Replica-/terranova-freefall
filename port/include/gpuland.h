@@ -19,6 +19,7 @@ extern int port_gl_capturing;           /* the main view's sharp drawing is bein
  * noted at port_gl_sh[pixel - port_gl_sh_base] as 0x100 | its colour (src/2d/perloop.c,
  * fl8lin.c); NULL otherwise.  A pixel still holding that colour at the end shows the ground */
 extern uint16_t *port_gl_sh;
+extern uint16_t port_gl_sh_val;         /* ... noted as this | the colour: 0x100 the ground, 0x200 an object */
 extern uint16_t *port_gl_shc;          /* ... the far land's (colras.c, haze.c): the whole drawing */
 extern const uint8_t *port_gl_sh_base;
 void port_gl_shadow(int on);            /* weather.c: around a terrain polygon routine */
@@ -46,6 +47,19 @@ extern int port_gl_wx_on;              /* the card draws the weather (sharp3d.c 
  * numbers) or flat (tex NULL, colour), through the light table ltab (24 x 256; NULL: unlit) */
 void port_gl_poly(const PortGlVert *v, int n, const uint8_t *tex, int colour, const uint8_t *ltab);
 
+/* the game's thread (src/3d/tmap.c): a textured polygon of an object (a unit, a building...) as
+ * the 3D library draws it into the sharp canvas: its points on the canvas (sx, sy in pixels) and
+ * their depth (z), texels (u, v) and light; its texture w x h colour numbers (key: the same
+ * texture's), see-through where 0 (trans), through the light table ltab (NULL: unlit).  The card
+ * draws the objects in the order they come, as the game does (far to near) */
+typedef struct {
+    float sx, sy, z, u, v, shade;
+} PortGlObjVert;
+void port_gl_obj(const PortGlObjVert *v, int n, const uint8_t *bits, int w, int h, int trans,
+                 const uint8_t *ltab, const void *key);
+/* ... drawing into the sharp canvas (not a picture of its own: the water's reflections) */
+int port_gl_obj_canvas(const void *bits);
+
 /* the display's thread (platform.c): the frame's capture drawn on the renderer's graphics card;
  * pal the game's colours (0xAARRGGBB).  NULL when there is nothing to show (no capture, not the
  * GPU renderer, no DXIL shaders) */
@@ -53,11 +67,13 @@ struct SDL_Renderer;
 struct SDL_Texture *port_gl_render(struct SDL_Renderer *r, void *capture, const uint32_t *pal);
 void port_gl_shutdown(void);
 
-/* the display's thread, after port_gl_render drew the capture: where the picture shows the ground
- * (W x H, 1 = ground), from row `row` of the canvas on; NULL when the card has no picture of it */
+/* the display's thread, after port_gl_render drew the capture: what the picture shows (W x H,
+ * 1 the ground, 2 an object the card drew, 0 the game's own), from row `row` of the canvas on; NULL
+ * when the card has no picture of it */
 const uint8_t *port_gl_mask(void *capture, int row);
 
-/* the alpha the display gives the pixels where the ground goes (their colour kept), and the
+/* the alpha the display gives the pixels where the ground goes (their colour kept; an object's
+ * one less: PORT_GL_MARK_A - 1), and the
  * render state that puts the card's ground there as a texture of the picture is drawn: its texel
  * (u, v) is the card picture's (u * sx, v * sy + oy); the pixels' alpha then a (the 3D's).  NULL:
  * none */

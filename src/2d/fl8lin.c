@@ -32,7 +32,8 @@
 /* the GPU ground (port/video/gpuland.c): the terrain's pixels noted while it is drawn */
 extern unsigned short *port_gl_sh;
 extern const unsigned char *port_gl_sh_base;
-#define GL_NOTE(q) do { if (port_gl_sh) port_gl_sh[(q) - port_gl_sh_base] = (unsigned short)(0x100 | *(q)); } while (0)
+extern unsigned short port_gl_sh_val;   /* 0x100 the ground, 0x200 an object */
+#define GL_NOTE(q) do { if (port_gl_sh) port_gl_sh[(q) - port_gl_sh_base] = (unsigned short)(port_gl_sh_val | *(q)); } while (0)
 #else
 #define GL_NOTE(q) ((void)0)
 #endif
@@ -229,6 +230,7 @@ static int lin_loop(lin_state *s, grs_tmap_loop_info *ti)
                 t = uf + s->du16; cu = t < uf; uf = t;
                 px = s->bits[idx];
                 s->rp[cnt] = s->clut ? s->clut[px] : px;
+                GL_NOTE(s->rp + cnt);
                 idx += (c ? s->step2 : s->step) + cu;
                 t = vf + s->dv16; c = t < vf; vf = t;
             } while (++cnt != 0);

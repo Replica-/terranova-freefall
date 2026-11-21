@@ -29,7 +29,8 @@
 /* the GPU ground (port/video/gpuland.c): the terrain's pixels noted while it is drawn */
 extern unsigned short *port_gl_sh;
 extern const unsigned char *port_gl_sh_base;
-#define GL_NOTE(q) do { if (port_gl_sh) port_gl_sh[(q) - port_gl_sh_base] = (unsigned short)(0x100 | *(q)); } while (0)
+extern unsigned short port_gl_sh_val;   /* 0x100 the ground, 0x200 an object */
+#define GL_NOTE(q) do { if (port_gl_sh) port_gl_sh[(q) - port_gl_sh_base] = (unsigned short)(port_gl_sh_val | *(q)); } while (0)
 #else
 #define GL_NOTE(q) ((void)0)
 #endif
@@ -122,17 +123,23 @@ static void loop(per_ps *ps, const per_lp *P, int kind)
         switch (kind) {
         case K_PLAIN:
             p[k] = pix;
+            GL_NOTE(p + k);
             break;
         case K_TRANS:
-            if (pix)
+            if (pix) {
                 p[k] = P->solid ? P->color : pix;
+                GL_NOTE(p + k);
+            }
             break;
         case K_CLUT:
             p[k] = P->clut[pix];
+            GL_NOTE(p + k);
             break;
         default:
-            if (pix)
+            if (pix) {
                 p[k] = P->clut[pix];
+                GL_NOTE(p + k);
+            }
             break;
         }
         k += hi ? P->dp_hi : P->dp_lo;

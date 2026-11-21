@@ -45,6 +45,12 @@
  */
 #include "3d_b.h"
 
+#ifndef TN_WATCOM_ABI
+#include "gpuland.h"                    /* port/video/gpuland.c: GPU rendering's objects */
+extern int port_s3d_on;                 /* port/video/sharp3d.c: drawing the sharp view */
+static grs_bitmap *gl_rsd_key;          /* the RSD8 bitmap g3d_tmap_rsd_bm was unpacked from */
+#endif
+
 #ifndef TN_LINK_ORIGINAL_DATA
 long g3d_tmap_index;
 g3s_phandle *g3d_tmap_plist;
@@ -128,6 +134,32 @@ static int tmap_draw(g3s_phandle *pl)
             v->w = fix_div(g3d_tmap_scale, p->z);
     }
     clip_restore_uv(g3d_tmap_n, g3d_tmap_points);
+#ifndef TN_WATCOM_ABI
+    /* GPU rendering (port/video/gpuland.c): an object's polygon into the sharp canvas, caught as
+     * drawn, and its pixels noted as the objects' */
+    if (port_gl_capturing && port_s3d_on && bm->type == BMT_FLAT8 && !grd_canvas->gc.fill_type &&
+        port_gl_obj_canvas(grd_canvas->bm.bits)) {
+        PortGlObjVert gv[24];
+        int n = m < 24 ? m : 24, lit = g3d_tmap_type & 1;
+        for (i = 0; i < n; i++) {
+            grs_vertex *v = g3d_tmap_vlist[i];
+            gv[i].sx = v->x / 65536.0f;
+            gv[i].sy = v->y / 65536.0f;
+            gv[i].z = g3d_poly_clipped[i]->z / 65536.0f;
+            gv[i].u = v->u / 65536.0f;
+            gv[i].v = v->v / 65536.0f;
+            gv[i].shade = lit ? v->i / 65536.0f : 0;
+        }
+        port_gl_obj(gv, n, bm->bits, bm->w, bm->h, bm->flags & BMF_TRANS, lit ? grd_screen->ltab : NULL,
+                    bm == &g3d_tmap_rsd_bm ? (const void *)gl_rsd_key : (const void *)bm);
+        port_gl_sh_val = 0x200;
+        port_gl_shadow(1);
+        WATCOM_CALL(grd_canvas_table[g3d_tmap_index], (long)g3d_tmap_bm, g3d_poly_n, (long)g3d_tmap_vlist);
+        port_gl_shadow(0);
+        port_gl_sh_val = 0x100;
+        return 0;
+    }
+#endif
     WATCOM_CALL(grd_canvas_table[g3d_tmap_index], (long)g3d_tmap_bm, g3d_poly_n, (long)g3d_tmap_vlist);
     return 0;
 
@@ -301,6 +333,9 @@ int do_tmap(int n, g3s_phandle *pl, grs_bitmap *bm)
     if (*(ushort *)&bm->type == BMT_RSD8) {     /* type and align as one word */
         if (gr_rsd8_convert(bm, &g3d_tmap_rsd_bm) != 0)
             return CLIP_ALL;
+#ifndef TN_WATCOM_ABI
+        gl_rsd_key = bm;                /* (the unpacked copy's buffer is shared: the key is its source) */
+#endif
         bm = &g3d_tmap_rsd_bm;
     }
     g3d_tmap_bm = bm;

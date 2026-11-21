@@ -994,8 +994,8 @@ typedef struct {
 
 /* the GPU ground (gpuland.c): the view's pixels that show the ground keep their colour, with the
  * alpha PORT_GL_MARK_A (the card's ground goes there; where the card drew nothing, the colour) */
-#define PORT_GL_MARK(c) (((c) & 0x00FFFFFFu) | ((uint32_t)PORT_GL_MARK_A << 24))
-#define GL_PICK(ground, c) ((ground) ? PORT_GL_MARK(c) : (c))
+#define PORT_GL_MARK(c, k) (((c) & 0x00FFFFFFu) | ((uint32_t)(PORT_GL_MARK_A + 1 - (k)) << 24))
+#define GL_PICK(k, c) ((k) ? PORT_GL_MARK(c, k) : (c))  /* k: the mask's (1 the ground, 2 an object) */
 
 /* the GPU ground (gpuland.c): a view's picture made with its mark where the ground goes,
  * drawn with the card's ground put there; the picture's rows are the card picture's from row oy
@@ -1133,7 +1133,7 @@ static void ck_rows(void *arg, int part, int thread)
                          scr[b] != ckp.art[(size_t)sy * rw->sw + f->x + b])
                     d[X] = 0xFF000000u | disp32[scr[b]];
                 else if (gm && gm[X])
-                    d[X] = PORT_GL_MARK(tc && tc[X] ? tc_px(tc_faded(tc[X], hi[X]), a3) : p3[hi[X]]);
+                    d[X] = PORT_GL_MARK(tc && tc[X] ? tc_px(tc_faded(tc[X], hi[X]), a3) : p3[hi[X]], gm[X]);
                 else if (tc && tc[X])
                     d[X] = tc_px(tc_faded(tc[X], hi[X]), a3);
                 else
@@ -1146,7 +1146,7 @@ static void ck_rows(void *arg, int part, int thread)
                      !(tip && b + f->x >= f->tip_x0 && b + f->x <= f->tip_x1))
                 d[X] = 0xFF000000u | disp32[scr[b]];    /* the HUD drew here */
             else if (gm && gm[X])   /* the GPU ground */
-                d[X] = PORT_GL_MARK(tc && tc[X] ? tc_px(tc_faded(tc[X], hi[X]), a3) : p3[hi[X]]);
+                d[X] = PORT_GL_MARK(tc && tc[X] ? tc_px(tc_faded(tc[X], hi[X]), a3) : p3[hi[X]], gm[X]);
             else if (tc && tc[X])   /* True colour */
                 d[X] = tc_px(tc_faded(tc[X], hi[X]), a3);
             else
@@ -1209,7 +1209,7 @@ static void ck_rows_one(void *arg, int part, int thread)
             int gy = f->y + (Yv < 0 ? -((-Yv + ky - 1) / ky) : Yv / ky);
             for (X = 0; X < hw; X++) {
                 int gx = rw->xh0 + X / kx - E, C = rw->xh0 + X / kx;
-                dw[X] = GL_PICK(gm && gm[X], tc && tc[X] ? tc_px(tc_faded(tc[X], hi[X]), a3) : p3[hi[X]]);
+                dw[X] = GL_PICK(gm ? gm[X] : 0, tc && tc[X] ? tc_px(tc_faded(tc[X], hi[X]), a3) : p3[hi[X]]);
                 /* (only in the helmet's parts: in its window, the 3D) */
                 /* (and in the pack's holes where the screen is not the game's art: what the HUD
                  * drew there, the pirate's weapon box in the 320 x 200 cockpit above the view) */
@@ -1233,7 +1233,7 @@ static void ck_rows_one(void *arg, int part, int thread)
             int b = l1[X], C = rw->xh0 + X / kx, gx = C - E;
             int on = gx >= 0 && gx < sw, inv = b >= 0 && b < f->w, inc = C >= 0 && C < cw;
             const port_s3d_frame *g = NULL;
-            uint32_t w3 = GL_PICK(gm && gm[X], tc && tc[X] ? tc_px(tc_faded(tc[X], hi[X]), a3) : p3[hi[X]]), fr = 0;
+            uint32_t w3 = GL_PICK(gm ? gm[X] : 0, tc && tc[X] ? tc_px(tc_faded(tc[X], hi[X]), a3) : p3[hi[X]]), fr = 0;
             db[X] = hud && hud[X / kx] && !(hm && inv && hm[b]) ? 0xFF000000u | disp32[hud[X / kx]] : 0;
             if (hud_over_3d(rw, X, Yv, &hc)) {
                 if (rw->lay && inc && sy >= 0 && sy < rw->sh &&
@@ -2248,7 +2248,7 @@ static void s3d_rows(void *arg, int part, int thread)
     int pitch = rw->pitch, tpitch = rw->tpitch, hw = rw->hw, kx = rw->kx, ky = rw->ky, paused = rw->paused;
     int s3d_nomask = rw->nomask, cx0 = rw->cx0, cy0 = rw->cy0, cx1 = rw->cx1, cy1 = rw->cy1;
     const uint8_t *glm = rw->glm;      /* the GPU ground (gpuland.c): 1 where it goes, as high */
-#define GLK(h) (glm && glm[(h) - f->high])
+#define GLK(h) (glm ? glm[(h) - f->high] : 0)
     int y0 = part * 16, y1 = y0 + 16 < rw->hh ? y0 + 16 : rw->hh, Y;
     (void)thread;
     for (Y = y0; Y < y1; Y++) {
