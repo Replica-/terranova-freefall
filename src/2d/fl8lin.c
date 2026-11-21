@@ -28,6 +28,15 @@
  */
 #include "2d_tmap.h"
 
+#ifndef TN_WATCOM_ABI
+/* the GPU ground (port/video/gpuland.c): the terrain's pixels noted while it is drawn */
+extern unsigned short *port_gl_sh;
+extern const unsigned char *port_gl_sh_base;
+#define GL_NOTE(q) do { if (port_gl_sh) port_gl_sh[(q) - port_gl_sh_base] = (unsigned short)(0x100 | *(q)); } while (0)
+#else
+#define GL_NOTE(q) ((void)0)
+#endif
+
 extern long grd_recip_tab[];       /* 0x45F71C fix 1/n */
 
 /* original 2d-core routines */
@@ -311,6 +320,7 @@ int gri_lit_lin_loop(grs_tmap_loop_info *ti)
                 px = s->ltab[edx];
                 ecx = (ecx & 0xffff00ff) | ((ulong)px << 8);
                 s->rp[cnt] = px;
+                GL_NOTE(s->rp + cnt);
             } while (cnt != 0);
         }
         advance(s, ti, &lc);

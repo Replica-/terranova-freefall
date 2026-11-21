@@ -25,6 +25,15 @@
  */
 #include "2d.h"
 
+#ifndef TN_WATCOM_ABI
+/* the GPU ground (port/video/gpuland.c): the terrain's pixels noted while it is drawn */
+extern unsigned short *port_gl_sh;
+extern const unsigned char *port_gl_sh_base;
+#define GL_NOTE(q) do { if (port_gl_sh) port_gl_sh[(q) - port_gl_sh_base] = (unsigned short)(0x100 | *(q)); } while (0)
+#else
+#define GL_NOTE(q) ((void)0)
+#endif
+
 typedef struct {
     void *scanline_func0;          /* +00 */
     void *shell_func;              /* +04 */
@@ -249,8 +258,10 @@ static void lit_loop(per_ps *ps, const per_lp *P, int trans)
         uf = t;
         pix = P->bits[off];
         off += step + (vc ? (long)P->w : 0) + uc;
-        if (!trans || pix)
+        if (!trans || pix) {
             p[k] = P->ltab[base | ((ulong)ch << 8) | pix];
+            GL_NOTE(p + k);
+        }
         t = ifr + dif;
         ic = t < ifr;
         ifr = t;
@@ -333,6 +344,7 @@ static void lit_loop_dither(per_ps *ps, const per_lp *P)
         uc = t < uf;
         uf = t;
         p[k] = ltab[port_dith_row[((I + port_dith[c]) >> 16) & 63] | bits[off]];
+        GL_NOTE(p + k);
         off += step + (vc ? w : 0) + uc;
         I += dI;
         t = yf + yfs;

@@ -1289,8 +1289,10 @@ static void gl_catch(TrVert **pts, long n, const uchar *tex, int colour, const u
     port_gl_poly(v, (int)n, tex, colour, lt);
 }
 #define GL_CATCH(pts, n, tex, colour, lt) gl_catch(pts, n, tex, colour, lt)
+#define GL_SHADOW(on) (port_gl_capturing ? port_gl_shadow(on) : (void)0)
 #else
 #define GL_CATCH(pts, n, tex, colour, lt) ((void)0)
+#define GL_SHADOW(on) ((void)0)
 #endif
 
 static uchar sky_first(TrVert **pts, long n, long x, long y)
@@ -1314,7 +1316,9 @@ uchar weather_2B2340(TrVert **pts, long n, long x, long y)
     }
 #endif
     GL_CATCH(pts, n, terr_tex_bm.bits, 0, grd_screen->ltab);
+    GL_SHADOW(1);
     WATCOM_CALL(grd_canvas_table[0x68 + terr_tex_bm.type * 2], (long)&terr_tex_bm, n, (long)pts);
+    GL_SHADOW(0);
     return 1;
 }
 
@@ -1330,7 +1334,9 @@ uchar weather_2B2418(TrVert **pts, long n, long x, long y)
     }
 #endif
     GL_CATCH(pts, n, terr_tex_bm.bits, 0, grd_screen->ltab);
+    GL_SHADOW(1);
     WATCOM_CALL(grd_canvas_table[0x42 + terr_tex_bm.type * 2], (long)&terr_tex_bm, n, (long)pts);
+    GL_SHADOW(0);
     return 1;
 }
 

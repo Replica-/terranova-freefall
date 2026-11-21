@@ -24,11 +24,16 @@
 #include "gpuland.h"
 #include "shaders/gpuland_vert.dxil.h"
 #include "shaders/gpuland_frag.dxil.h"
+#include "shaders/gpuland_mix.dxil.h"
 
 void port_log(const char *fmt, ...);
 
 int port_gl;
 int port_gl_capturing;
+uint16_t *port_gl_sh;
+const uint8_t *port_gl_sh_base;
+static uint16_t *sh_buf;                /* the shadow of the canvas (the game's thread) */
+static size_t sh_n;
 
 #define TEX_MAX 256                     /* textures in one picture (the planet's 64, blast marks) */
 #define LT_MAX 64                       /* light tables in one picture (haze and fog levels) */
@@ -54,6 +59,9 @@ typedef struct {
     uint8_t (*lt)[LT_SIZE];
     unsigned long dropped;
     unsigned serial;
+    uint8_t *mask;                      /* W x H: 1 where the finished picture shows the ground */
+    size_t mask_n;
+    const uint8_t *canvas;
 } Capture;
 
 static Capture *cur;
@@ -61,11 +69,23 @@ static unsigned serial;
 static int last_tex = -1, last_lt = -1;
 
 /* ------------------------------------------------------------------ the game's thread */
-void port_gl_begin(void **slot, int W, int H, long half_w, long half_h)
+void port_gl_begin(void **slot, const uint8_t *canvas, int W, int H, long half_w, long half_h)
 {
     Capture *c = *slot;
-    if (!port_gl)
+    size_t n = (size_t)W * H;
+    if (!port_gl || W <= 0 || H <= 0)
         return;
+    if (n > sh_n) {                     /* the shadow, as big as the canvas */
+        free(sh_buf);
+        sh_buf = malloc(n * sizeof *sh_buf);
+        sh_n = sh_buf ? n : 0;
+        if (!sh_buf) {
+            port_log("GPU ground: no memory for the canvas's shadow, off\n");
+            port_gl = 0;
+            return;
+        }
+    }
+    memset(sh_buf, 0, n * sizeof *sh_buf);
     if (!c) {
         c = calloc(1, sizeof *c);
         if (c) {
@@ -79,6 +99,13 @@ void port_gl_begin(void **slot, int W, int H, long half_w, long half_h)
         }
         *slot = c;
     }
+    if (n > c->mask_n) {
+        free(c->mask);
+        c->mask = malloc(n);
+        c->mask_n = c->mask ? n : 0;
+    }
+    c->canvas = canvas;
+    port_gl_sh_base = canvas;
     c->W = W;
     c->H = H;
     c->hw = (float)half_w;
@@ -91,11 +118,23 @@ void port_gl_begin(void **slot, int W, int H, long half_w, long half_h)
     port_gl_capturing = 1;
 }
 
+void port_gl_shadow(int on)
+{
+    port_gl_sh = on && cur ? sh_buf : NULL;
+}
+
 void port_gl_end(void)
 {
-    if (!cur)
+    Capture *c = cur;
+    if (!c)
         return;
-    cur->serial = ++serial;
+    port_gl_sh = NULL;
+    if (c->mask) {                      /* the ground: drawn by the terrain, not drawn over since */
+        size_t i, n = (size_t)c->W * c->H;
+        for (i = 0; i < n; i++)
+            c->mask[i] = (sh_buf[i] & 0x100) && (uint8_t)sh_buf[i] == c->canvas[i];
+    }
+    c->serial = ++serial;
     port_gl_capturing = 0;
     cur = NULL;
 }
@@ -202,6 +241,9 @@ static SDL_Texture *shown;
 static int tw, th;
 static unsigned drawn_serial;
 static int filter = 1;
+static SDL_GPURenderState *mix;         /* the ground put into the picture (port_gl_state) */
+static SDL_GPUShader *mix_sh;
+static SDL_GPUTexture *mix_for;         /* ... the colour target it was made with */
 
 static void forget(void)
 {
@@ -217,11 +259,18 @@ static void forget(void)
     shown = NULL;
     tw = th = 0;
     drawn_serial = 0;
+    mix = NULL;
+    mix_sh = NULL;
+    mix_for = NULL;
 }
 
 void port_gl_shutdown(void)
 {
     if (dev) {
+        if (mix)
+            SDL_DestroyGPURenderState(mix);
+        if (mix_sh)
+            SDL_ReleaseGPUShader(dev, mix_sh);
         if (shown)
             SDL_DestroyTexture(shown);
         if (pipe)
@@ -577,4 +626,63 @@ SDL_Texture *port_gl_render(SDL_Renderer *r, void *capture, const uint32_t *pal)
                      c->W, c->H, (unsigned long)(c->nv / 3), c->ntex, c->nlt, c->dropped);
     }
     return shown;
+}
+
+const uint8_t *port_gl_mask(void *capture, int row)
+{
+    const Capture *c = capture;
+    if (!port_gl || broken || !c || !c->mask || !shown || c->serial != drawn_serial || row < 0 || row >= c->H)
+        return NULL;
+    return c->mask + (size_t)row * c->W;
+}
+
+SDL_GPURenderState *port_gl_state(SDL_Renderer *r, float sx, float sy, float oy)
+{
+    float map[4];
+    if (!port_gl || broken || r != g_r || !color)
+        return NULL;
+    if (mix && mix_for != color) {      /* a new picture size: made again with the new target */
+        SDL_DestroyGPURenderState(mix);
+        mix = NULL;
+    }
+    if (!mix) {
+        SDL_GPURenderStateCreateInfo ri;
+        SDL_GPUTextureSamplerBinding sb;
+        if (!mix_sh) {
+            SDL_GPUShaderCreateInfo si;
+            SDL_zero(si);
+            si.format = SDL_GPU_SHADERFORMAT_DXIL;
+            si.entrypoint = "main";
+            si.code = gpuland_mix_dxil;
+            si.code_size = gpuland_mix_dxil_len;
+            si.stage = SDL_GPU_SHADERSTAGE_FRAGMENT;
+            si.num_samplers = 2;
+            si.num_uniform_buffers = 1;
+            mix_sh = SDL_CreateGPUShader(dev, &si);
+            if (!mix_sh) {
+                port_log("GPU ground: the mixing shader not made (%s), off\n", SDL_GetError());
+                broken = 1;
+                return NULL;
+            }
+        }
+        sb.texture = color;
+        sb.sampler = point;
+        SDL_zero(ri);
+        ri.fragment_shader = mix_sh;
+        ri.num_sampler_bindings = 1;
+        ri.sampler_bindings = &sb;
+        mix = SDL_CreateGPURenderState(r, &ri);
+        if (!mix) {
+            port_log("GPU ground: the mixing state not made (%s), off\n", SDL_GetError());
+            broken = 1;
+            return NULL;
+        }
+        mix_for = color;
+    }
+    map[0] = sx;
+    map[1] = sy;
+    map[2] = oy;
+    map[3] = 0;
+    SDL_SetGPURenderStateFragmentUniforms(mix, 0, map, sizeof map);
+    return mix;
 }

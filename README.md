@@ -1,8 +1,29 @@
 # Terra Nova: Freefall
 
+## Purpose of this fork
+
 **Enhancing into GPU mode with various particle and weather effects, and removing texture wobble.**
 
-> **About this fork.** This fork aims to rebuild the 3D world with GPU rendering: full colour, with no 256-colour palette, and better particle and weather effects. The original project is [Cyber1on/terranova-freefall](https://github.com/Cyber1on/terranova-freefall).
+This fork moves Terra Nova's 3D world from the original software renderer onto the graphics card: full colour instead of the 256-colour palette, textures that no longer swim as you move, and room for better rain, snow, explosions, water and per-pixel effects. The original project, which this builds on, is [Cyber1on/terranova-freefall](https://github.com/Cyber1on/terranova-freefall).
+
+### Software renderer vs GPU renderer
+
+![The same walk in Operation Seagull: the original software ground above, the GPU ground below](docs/images/gpu-ground-walk.gif)
+
+The same walk in Operation Seagull, frame for frame. Above: the original renderer, whose ground textures swim and shimmer as the view moves. Below: the same ground drawn by the graphics card. Everything else in the picture (sky, trees, cockpit, HUD) is still the software renderer's, so far.
+
+| | Software renderer (original) | GPU renderer (this fork) |
+|---|---|---|
+| Ground texturing | Linear mapping on many polygons: textures swim and bend as you move | Perspective-correct on every polygon: textures stay put |
+| Colour | 256-colour palette; light in whole steps | Full colour; light blends smoothly between the game's own light levels |
+| Hiding what's behind | Drawn far to near (painter's order) | Depth buffer |
+| Precision | 1990s fixed-point screen positions | Floating point |
+| Where it's drawn | The processor (11–18 ms a frame at 4× 3D resolution in the built-in benchmark) | The graphics card |
+| Status | Complete | **Ground only so far.** Sky, objects, water and weather come next |
+
+The GPU ground is a test feature for now. It needs Direct3D 12 (DXIL shaders); Vulkan comes later. Turn it on by starting `tnfree.exe` with the environment variable `FREEFALL_GPU_LAND=1`. It doesn't make the game faster yet: the processor still draws the original picture alongside it, which the game's own logic reads. The speed gain comes once more of the world moves to the card.
+
+Every change is checked against a deterministic baseline of all 39 campaign missions (`tools/baseline.py`).
 
 **Terra Nova: Strike Force Centauri** (Looking Glass Technologies, 1996) for modern Windows, built from a complete decompilation of the game into C.
 
