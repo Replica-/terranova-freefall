@@ -6,15 +6,39 @@
 
 This fork moves Terra Nova's 3D world from the original software renderer onto the graphics card: full colour instead of the 256-colour palette, textures that no longer swim as you move, and room for better rain, snow, explosions, water and per-pixel effects. The original project, which this builds on, is [Cyber1on/terranova-freefall](https://github.com/Cyber1on/terranova-freefall).
 
+### How GPU rendering works
+
+Terra Nova draws its world on the processor, into a 256-colour picture that the game's own logic also reads (what you see through the probe, what the AI can see). GPU rendering keeps that picture for the game and replaces only what you see:
+
+1. **Catching the world as it is drawn.** While the game draws its sharp 3D view, its ground, far land, textured models, effects and weather are handed to the graphics card instead of being drawn pixel by pixel: view-space points, texels, light level, texture and light table. The processor still marks where each thing shows: the ground's polygons are filled with one plain colour instead of being texture-mapped, and with 3D resolution 6x the processor's picture is drawn at no more than 4x while the card draws at the full 6x.
+2. **Drawing it on the card** (SDL_gpu on Direct3D 12): perspective-correct texturing with a depth buffer and floating-point positions, so nothing swims or wobbles; the game's square texels close up with smoothed edges, full-colour mipmaps with 8x anisotropic filtering further away; light blended smoothly between the game's light levels; fog per pixel by real distance; the far land built from the map's heights; rain and snow as thousands of particles in the world; effects-pack explosions and smoke in their own colours and alpha.
+3. **Putting it together.** A mask from the game's picture says, pixel by pixel, whether the ground, an object, an effect or nothing of the card's shows there, so the game's own drawing order, the cockpit, the HUD, target brackets and everything drawn over the 3D stay exactly where they were. Where the card has nothing (water, units drawn as sprites), the game's own pixel shows.
+
+Turn it on with **O** (the Freefall options), **Display**, **GPU rendering: On** (saved as `screen_renderer=gpu` in `tnfree.ini`). It is experimental, needs Direct3D 12 (DXIL shaders; Vulkan comes later) and always uses full colour. Every change is checked against a deterministic baseline of all 39 campaign missions (`tools/baseline.py`): with GPU rendering off, the pictures stay identical to the original renderer's.
+
 ### Software renderer vs GPU renderer
+
+The same frames of the same missions, frame for frame (lockstep runs, 1920x1080, the Freefall settings with 3D resolution 4x). Top: the whole screen. Bottom: the middle of the 3D view at full size.
+
+![Operation Seagull: software renderer on the left, GPU renderer on the right](docs/images/gpu-vs-software-seagull.jpg)
+
+Operation Seagull. The distant hills take real per-pixel fog instead of 16 banded steps, and the far ground is smooth instead of breaking into noisy pixels.
+
+![Operation Ivanhoe: software renderer on the left, GPU renderer on the right](docs/images/gpu-vs-software-ivanhoe.jpg)
+
+Operation Ivanhoe. The mountains and the far land are full colour, filtered and fogged by distance. Still to fix: the bright seam along the left hillside's edge in the GPU picture.
+
+![Operation Icepick in the rain: software renderer on the left, GPU renderer on the right](docs/images/gpu-vs-software-icepick.jpg)
+
+Operation Icepick, in the rain. The software renderer's rain is dots on the screen; the card's is streaks falling in the world. The near ice keeps the game's crisp texels, and the far ice no longer shimmers.
 
 ![The same walk in Operation Seagull: the original software ground above, the GPU ground below](docs/images/gpu-ground-walk.gif)
 
-The same walk in Operation Seagull, frame for frame. Above: the original renderer, whose ground textures swim and shimmer as the view moves. Below: the same ground drawn by the graphics card.
+The same walk in Operation Seagull. Above: the original renderer, whose ground textures swim and shimmer as the view moves. Below: the same ground drawn by the graphics card.
 
 ![Snow in Operation Sherwood: the original's dark dots on the left, GPU rendering's flakes on the right](docs/images/gpu-snow.gif)
 
-Snow in Operation Sherwood. Left: the original draws snow and rain as dots and short streaks on the screen. Right: GPU rendering's weather, thousands of flakes (or rain streaks) placed in the world around you, so they stay put as you turn and walk, hidden behind hills, soft and in full colour.
+Snow in Operation Sherwood. Left: the original's dots and short streaks on the screen. Right: flakes placed in the world around you, so they stay put as you turn and walk, hidden behind hills, soft and in full colour.
 
 | | Software renderer (original) | GPU renderer (this fork) |
 |---|---|---|
@@ -22,14 +46,29 @@ Snow in Operation Sherwood. Left: the original draws snow and rain as dots and s
 | Colour | 256-colour palette; light in whole steps | Full colour; light blends smoothly between the game's own light levels |
 | Hiding what's behind | Drawn far to near (painter's order) | Depth buffer |
 | Precision | 1990s fixed-point screen positions | Floating point |
-| Where it's drawn | The processor (11–18 ms a frame at 4× 3D resolution in the built-in benchmark) | The graphics card |
+| Far texturing | One texel per pixel: distant ground shimmers | Mipmaps with 8x anisotropic filtering |
 | Fog | 16 levels through light tables, a square at a time | Per pixel by real distance, full colour |
 | Rain and snow | Dots and short streaks on the screen | Particles in the world: rain streaks, soft drifting flakes |
-| Status | Complete | **Ground (near and far), fog and weather so far.** Objects, explosions and water come next |
+| Explosions and smoke (effects pack) | Through the 256 colours | The pack's own colours and alpha |
+| Status | Complete | **Ground (near and far), fog, weather, textured models and effects.** Units and trees (sprites) and water come next |
 
-GPU rendering is experimental for now. It needs Direct3D 12 (DXIL shaders); Vulkan comes later. Turn it on with **O** (the Freefall options), **Display**, **GPU rendering: On** (saved as `screen_renderer=gpu` in `tnfree.ini`). It always uses full colour (True colour on). Close up it keeps the game's square texels with smoothed edges; further away it uses full-colour mipmaps with anisotropic filtering, so distant ground doesn't shimmer. The far land, which the game draws with a ray caster in screen columns, is built on the card from the map's heights, and the fog is worked out per pixel. Water, the trees, units and buildings are still the game's for now (and so still in its 256 colours). It doesn't make the game faster yet: the processor still draws the original picture alongside it, which the game's own logic reads. The speed gain comes once more of the world moves to the card.
+### Frame rate and smoothness
 
-Every change is checked against a deterministic baseline of all 39 campaign missions (`tools/baseline.py`).
+Measured with the built-in benchmark (`tnfree --bench`: a fixed course through mission 3, every frame drawn as fast as the PC can) on a Ryzen 7 5800X with an RTX 3080, 1920x1080, the Freefall settings:
+
+| 3D resolution | Software renderer | GPU renderer | |
+|---|---|---|---|
+| 6x | 46 fps (95% of frames under 31.9 ms) | **71 fps** (95% under 18.2 ms) | GPU **54% faster**; by the lake in the goggles 37 → 59 fps |
+| 4x | 95 fps | 85 fps | GPU 10% slower |
+| Off | 101 fps | 85 fps | GPU 15% slower |
+
+At 6x the GPU renderer is clearly faster, because the processor no longer texture-maps the ground and draws its own picture at 4x while the card draws at 6x (a walk in mission 3 at 2560x1440 with 6x and water High: median frame 19.1 → 9.3 ms, frames over 16.7 ms 433 → 2 of 570). At 4x and below the processor still draws its picture alongside the card's, so GPU rendering costs a little; every setting stays well above the game's 60 frames a second. The gains grow as more of the world moves to the card.
+
+A steady frame rate isn't enough on its own: on a 120 Hz display, looking around also has to be even. These fixes made that so:
+
+- **The display's work per new picture** (mission 3, turning, 2560x1440): 15–22 ms → 8 ms. Mipmaps were being built inside memory the card reads (6 ms a picture), and the layered helmet's art was recoloured on every palette change (4 ms), even when no colour it uses had changed.
+- **Frame pacing:** each game frame is shown once, for exactly its 2 refreshes at 60 fps on 120 Hz. Frames shown for their 2 refreshes while turning: 80% → 99% (3D resolution off), 50% → 80% (6x).
+- **Mouse look, even per frame:** each frame takes exactly one frame's worth of mouse movement, read straight from SDL's input queue with each move's timestamp. Before, the moves reached the game only when the display thread read events after its present, which on a full screen waits for the flip, so a frame got no new movement or double. With the frame rate steady at 60, the view still turned in uneven steps. Measured headless with a 1 kHz test mouse: the turn per frame went from 180–648 (2–11 frames a second off by 25% or more) to 360–504 (none).
 
 **Terra Nova: Strike Force Centauri** (Looking Glass Technologies, 1996) for modern Windows, built from a complete decompilation of the game into C.
 
