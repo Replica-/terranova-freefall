@@ -45,6 +45,7 @@ static uint16_t *fxsh_buf;              /* the effects' shadow (port_gl_fx's cal
 static size_t fxsh_n;
 static int fx_used;                     /* (cleared on its first use in a drawing) */
 static volatile int fx_ready;           /* the card draws the effects: their callers may leave them out */
+volatile int port_gl_ok;                /* the card has drawn the ground: the game's may be plain (weather.c) */
 const uint8_t *port_gl_sh_base;
 static uint16_t *sh_buf;                /* the shadow of the canvas (the game's thread) */
 static size_t sh_n;
@@ -477,6 +478,7 @@ static void gl_off(void)
     broken = 1;
     port_gl_wx_on = 0;
     fx_ready = 0;
+    port_gl_ok = 0;
 }
 
 static void forget(void)
@@ -492,6 +494,7 @@ static void forget(void)
     memset(fx_key, 0, sizeof fx_key);
     port_gl_wx_on = 0;
     fx_ready = 0;
+    port_gl_ok = 0;
     point = trilin = NULL;
     texels = ltabs = paltex = color = depth = colours = fits = NULL;
     vbuf = NULL;
@@ -1458,6 +1461,7 @@ SDL_Texture *port_gl_render(SDL_Renderer *r, void *capture, const uint32_t *pal)
     weather_pass(cmd, c, cam, pal);
     if (!SDL_SubmitGPUCommandBuffer(cmd))
         return NULL;
+    port_gl_ok = 1;
     {
         static int told;                /* (the first picture, then the first with objects, with effects) */
         int now = (c->nv ? 1 : 0) | (c->onv ? 2 : 0) | (c->nfx ? 4 : 0);

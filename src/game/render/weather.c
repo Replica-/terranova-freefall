@@ -30,6 +30,7 @@
  *    draw nothing.
  */
 #include "g6_b.h"
+#include <math.h>
 
 #ifndef TN_WATCOM_ABI
 extern int port_highfps_fix;            /* port/core/platform.c: above 25 frames a second */
@@ -1294,6 +1295,61 @@ static void gl_catch(TrVert **pts, long n, const uchar *tex, int colour, const u
     }
     port_gl_poly(v, (int)n, tex, colour, lt);
 }
+/* GPU rendering draws the ground (port/video/gpuland.c): the game's own square is then only what
+ * says where the ground shows (the canvas's shadow) and a colour for a pixel the card leaves out,
+ * so it is filled plain, in its texture's middle texel lit by the corners' mean light, instead of
+ * mapped (the sharp view's dearest drawing).  Not with the water's High reflection (it mirrors the
+ * land's pixels) nor in the infrared */
+extern int port_water_full;
+static int gl_plain(void)
+{
+    return port_gl_capturing && port_gl_ok && port_s3d_on && port_water_full != 2 && !grd_canvas->gc.fill_type;
+}
+
+static void gl_fill(TrVert **pts, long n, const uchar *tex)
+{
+    uchar *bits = grd_canvas->bm.bits;
+    long row = grd_canvas->bm.row, w = grd_canvas->bm.w, h = grd_canvas->bm.h, i, y, y0, y1, sh = 0;
+    float ymin = 1e9f, ymax = -1e9f;
+    uchar c;
+    for (i = 0; i < n; i++) {
+        float sy = *(fix *)&pts[i]->f00[4] / 65536.0f;
+        ymin = sy < ymin ? sy : ymin;
+        ymax = sy > ymax ? sy : ymax;
+        sh += pts[i]->shade >> 16;
+    }
+    sh /= n;
+    c = grd_screen->ltab[((sh < 0 ? 0 : sh > 23 ? 23 : sh) << 8) | tex[32 * 64 + 32]];
+    y0 = (long)ceilf(ymin - 0.5f);
+    y1 = (long)ceilf(ymax - 0.5f);
+    y0 = y0 < 0 ? 0 : y0;
+    y1 = y1 > h ? h : y1;
+    port_gl_shadow(1);
+    for (y = y0; y < y1; y++) {
+        float yc = y + 0.5f, xl = 1e9f, xr = -1e9f;
+        long x, xa, xb;
+        for (i = 0; i < n; i++) {       /* where the edges cross the row's middle */
+            const fix *a = (const fix *)pts[i]->f00, *b = (const fix *)pts[(i + 1) % n]->f00;
+            float ax = a[0] / 65536.0f, ay = a[1] / 65536.0f, bx = b[0] / 65536.0f, by = b[1] / 65536.0f, x2;
+            if ((ay <= yc) == (by <= yc))
+                continue;
+            x2 = ax + (yc - ay) * (bx - ax) / (by - ay);
+            xl = x2 < xl ? x2 : xl;
+            xr = x2 > xr ? x2 : xr;
+        }
+        xa = (long)ceilf(xl - 0.5f);
+        xb = (long)ceilf(xr - 0.5f);
+        xa = xa < 0 ? 0 : xa;
+        xb = xb > w ? w : xb;
+        for (x = xa; x < xb; x++) {
+            uchar *p = bits + y * row + x;
+            *p = c;
+            if (port_gl_sh)
+                port_gl_sh[p - port_gl_sh_base] = (unsigned short)(0x100 | c);
+        }
+    }
+    port_gl_shadow(0);
+}
 #define GL_CATCH(pts, n, tex, colour, lt) gl_catch(pts, n, tex, colour, lt)
 #define GL_SHADOW(on) (port_gl_capturing ? port_gl_shadow(on) : (void)0)
 #else
@@ -1313,6 +1369,13 @@ uchar weather_2B2340(TrVert **pts, long n, long x, long y)
     if (sky_first(pts, n, x, y))
         return 1;
     terr_tex_bm.bits = cell_tex(x, y);
+#ifndef TN_WATCOM_ABI
+    if (gl_plain()) {                   /* GPU rendering draws it (gl_fill) */
+        GL_CATCH(pts, n, terr_tex_bm.bits, 0, grd_screen->ltab);
+        gl_fill(pts, n, terr_tex_bm.bits);
+        return 1;
+    }
+#endif
     for (i = 0; i < n; i++)
         pts[i]->b = fix_div(0x10000, pts[i]->z);
 #ifndef TN_WATCOM_ABI
@@ -1334,6 +1397,11 @@ uchar weather_2B2418(TrVert **pts, long n, long x, long y)
         return 1;
     terr_tex_bm.bits = cell_tex(x, y);
 #ifndef TN_WATCOM_ABI
+    if (gl_plain()) {                   /* GPU rendering draws it (gl_fill) */
+        GL_CATCH(pts, n, terr_tex_bm.bits, 0, grd_screen->ltab);
+        gl_fill(pts, n, terr_tex_bm.bits);
+        return 1;
+    }
     if (pack_mark(pts, n, x, y, 0x42)) {
         GL_CATCH(pts, n, terr_tex_bm.bits, 0, grd_screen->ltab);
         return 1;

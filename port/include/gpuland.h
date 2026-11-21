@@ -14,6 +14,7 @@ typedef struct {
 
 extern int port_gl;                     /* FREEFALL_GPU_LAND: 1 in the view, 2 alone (testing) */
 extern int port_gl_capturing;           /* the main view's sharp drawing is being caught */
+extern volatile int port_gl_ok;         /* the card has drawn the ground (its pictures are shown) */
 
 /* while a terrain polygon is drawn into the sharp canvas: each pixel the lit mappers write is
  * noted at port_gl_sh[pixel - port_gl_sh_base] as 0x100 | its colour (src/2d/perloop.c,

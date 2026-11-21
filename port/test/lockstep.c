@@ -70,6 +70,33 @@ static unsigned long nframe;
 static long heap_every;
 static const char *shots, *shot_prefix;    /* FREEFALL_LOCKSTEP_SHOTS, FREEFALL_LOCKSTEP_SHOT */
 static uint64_t shots_t0;
+static uint32_t *ftimes;                /* FREEFALL_LOCKSTEP_TIMES: each frame's time (us), from frame 30 */
+static unsigned long nftimes, ftimes_cap;
+static uint64_t ftime_last;
+
+static int cmp_u32(const void *a, const void *b)
+{
+    uint32_t x = *(const uint32_t *)a, y = *(const uint32_t *)b;
+    return x < y ? -1 : x > y;
+}
+
+/* the frames' times: their spread, the slowest, how many over a 60th of a second */
+static void times_report(void)
+{
+    unsigned long i, over = 0, worst = 0;
+    if (!nftimes)
+        return;
+    for (i = 0; i < nftimes; i++) {
+        over += ftimes[i] > 16667;
+        if (ftimes[i] > ftimes[worst])
+            worst = i;
+    }
+    port_log("lockstep: slowest frame %.1f ms (frame %lu)\n", ftimes[worst] / 1000.0, worst + 31);
+    qsort(ftimes, nftimes, sizeof *ftimes, cmp_u32);
+    port_log("lockstep: frame times: median %.1f ms, 95%% %.1f, 99%% %.1f; %lu of %lu over 16.7 ms\n",
+             ftimes[nftimes / 2] / 1000.0, ftimes[nftimes * 95 / 100] / 1000.0, ftimes[nftimes * 99 / 100] / 1000.0,
+             over, nftimes);
+}
 static int cmp_heap;                    /* the comparison's heap: fill bytes, own allocator (not the benchmark) */
 static void heap_init(void);
 static void write_heap(void);
@@ -366,6 +393,7 @@ static void take_shots(void)
         double sec = (port_now_us() - shots_t0) / 1e6;
         port_log("lockstep: shots done, %lu frames in %.1f s (%.2f ms a frame), weather %u\n", nframe, sec,
                  nframe ? sec * 1000 / nframe : 0.0, *(volatile unsigned char *)port_ptr(WEATHER));
+        times_report();
         port_exit(0);
     }
 }
@@ -374,8 +402,18 @@ static void take_shots(void)
 void port_lockstep_frame(void)
 {
     static int was_in;
-    if (nframe == 0)
-        shots_t0 = port_now_us();
+    uint64_t now = port_now_us();
+    if (nframe == 0) {
+        const char *t = getenv("FREEFALL_LOCKSTEP_TIMES");
+        shots_t0 = now;
+        if (t && *t == '1' && !ftimes) {
+            ftimes_cap = 100000;
+            ftimes = malloc(ftimes_cap * sizeof *ftimes);
+        }
+    }
+    if (ftimes && nframe > 30 && nftimes < ftimes_cap)    /* (the mission's start left out) */
+        ftimes[nftimes++] = (uint32_t)(now - ftime_last);
+    ftime_last = now;
     if (shots)
         take_shots();
     if (nframe == 0 && dump)
