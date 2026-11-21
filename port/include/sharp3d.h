@@ -76,6 +76,7 @@ void port_fog_end(void);
  * sharp drawing into picture idx (of its three) high, W x H; port_tc_end after it, giving the
  * picture's full colours (port_s3d_frame tc) or NULL, and the rows that have them */
 extern int port_truecol;
+int port_tc_mode(void);                 /* truecol.c: the True colour in use (GPU rendering: On) */
 void port_tc_begin(int idx, uint8_t *high, int W, int H);
 unsigned long *port_tc_end(const uint8_t **rows);
 extern unsigned long port_tc_pal[256];  /* the game's colours (RGB) of the drawing (port_tc_begin) */

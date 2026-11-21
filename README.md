@@ -10,7 +10,11 @@ This fork moves Terra Nova's 3D world from the original software renderer onto t
 
 ![The same walk in Operation Seagull: the original software ground above, the GPU ground below](docs/images/gpu-ground-walk.gif)
 
-The same walk in Operation Seagull, frame for frame. Above: the original renderer, whose ground textures swim and shimmer as the view moves. Below: the same ground drawn by the graphics card. Everything else in the picture (sky, trees, cockpit, HUD) is still the software renderer's, so far.
+The same walk in Operation Seagull, frame for frame. Above: the original renderer, whose ground textures swim and shimmer as the view moves. Below: the same ground drawn by the graphics card.
+
+![Snow in Operation Sherwood: the original's dark dots on the left, GPU rendering's flakes on the right](docs/images/gpu-snow.gif)
+
+Snow in Operation Sherwood. Left: the original draws snow and rain as dots and short streaks on the screen. Right: GPU rendering's weather, thousands of flakes (or rain streaks) placed in the world around you, so they stay put as you turn and walk, hidden behind hills, soft and in full colour.
 
 | | Software renderer (original) | GPU renderer (this fork) |
 |---|---|---|
@@ -20,9 +24,10 @@ The same walk in Operation Seagull, frame for frame. Above: the original rendere
 | Precision | 1990s fixed-point screen positions | Floating point |
 | Where it's drawn | The processor (11–18 ms a frame at 4× 3D resolution in the built-in benchmark) | The graphics card |
 | Fog | 16 levels through light tables, a square at a time | Per pixel by real distance, full colour |
-| Status | Complete | **Near and far ground so far.** Objects, water and weather come next |
+| Rain and snow | Dots and short streaks on the screen | Particles in the world: rain streaks, soft drifting flakes |
+| Status | Complete | **Ground (near and far), fog and weather so far.** Objects, explosions and water come next |
 
-The GPU ground is experimental for now. It needs Direct3D 12 (DXIL shaders); Vulkan comes later. Turn it on with **O** (the Freefall options), **Display**, **GPU ground: On** (saved as `screen_gpu_ground=on` in `tnfree.ini`). Close up it keeps the game's square texels with smoothed edges; further away it uses full-colour mipmaps with anisotropic filtering, so distant ground doesn't shimmer. The far land, which the game draws with a ray caster in screen columns, is built on the card from the map's heights, and the fog is worked out per pixel. Water is still the game's. It doesn't make the game faster yet: the processor still draws the original picture alongside it, which the game's own logic reads. The speed gain comes once more of the world moves to the card.
+GPU rendering is experimental for now. It needs Direct3D 12 (DXIL shaders); Vulkan comes later. Turn it on with **O** (the Freefall options), **Display**, **GPU rendering: On** (saved as `screen_renderer=gpu` in `tnfree.ini`). It always uses full colour (True colour on). Close up it keeps the game's square texels with smoothed edges; further away it uses full-colour mipmaps with anisotropic filtering, so distant ground doesn't shimmer. The far land, which the game draws with a ray caster in screen columns, is built on the card from the map's heights, and the fog is worked out per pixel. Water, the trees, units and buildings are still the game's for now (and so still in its 256 colours). It doesn't make the game faster yet: the processor still draws the original picture alongside it, which the game's own logic reads. The speed gain comes once more of the world moves to the card.
 
 Every change is checked against a deterministic baseline of all 39 campaign missions (`tools/baseline.py`).
 

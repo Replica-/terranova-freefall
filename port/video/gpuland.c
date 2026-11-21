@@ -21,10 +21,13 @@
 #include <SDL3/SDL.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 #include "gpuland.h"
 #include "shaders/gpuland_vert.dxil.h"
 #include "shaders/gpuland.dxil.h"
 #include "shaders/gpuland_mix.dxil.h"
+#include "shaders/gpuwx_vert.dxil.h"
+#include "shaders/gpuwx.dxil.h"
 
 void port_log(const char *fmt, ...);
 
@@ -63,6 +66,8 @@ typedef struct {
     uint8_t (*lt)[LT_SIZE];
     unsigned long dropped;
     unsigned serial;
+    int wx_kind, wx_colour;             /* the weather (port_gl_weather): -1 none, 0 rain, 1 snow */
+    float wx_density, wx_wind, wx_time, cam_x, cam_y;
     int fog, fog_colour;                /* the fog for each pixel (port_gl_view) */
     float fog_start, fog_end, m[9], mz[3];
     uint8_t *mask;                      /* W x H: 1 where the finished picture shows the ground */
@@ -119,6 +124,7 @@ void port_gl_begin(void **slot, const uint8_t *canvas, int W, int H, long half_w
     c->nv = 0;
     c->ntex = c->nlt = 0;
     c->fog = 0;
+    c->wx_kind = -1;
     c->dropped = 0;
     last_tex = last_lt = -1;
     cur = c;
@@ -137,6 +143,20 @@ void port_gl_view(const float m[9], const float mz[3], int fog, float start, flo
     c->fog_start = start;
     c->fog_end = end;
     c->fog_colour = colour;
+}
+
+void port_gl_weather(int kind, int colour, float density, float wind, float time, float cam_x, float cam_y)
+{
+    Capture *c = cur;
+    if (!c)
+        return;
+    c->wx_kind = kind;
+    c->wx_colour = colour;
+    c->wx_density = density;
+    c->wx_wind = wind;
+    c->wx_time = time;
+    c->cam_x = cam_x;
+    c->cam_y = cam_y;
 }
 
 void port_gl_shadow(int on)
@@ -252,6 +272,9 @@ static SDL_Renderer *g_r;
 static SDL_GPUDevice *dev;
 static int broken;
 static SDL_GPUGraphicsPipeline *pipe;
+static SDL_GPUGraphicsPipeline *wx_pipe;   /* the weather's particles (gpuwx shaders) */
+static SDL_GPUTexture *wx_tex;          /* ... their layer, the picture's size (premultiplied) */
+int port_gl_wx_on;                      /* the card draws the weather: the game's drops left out */
 static SDL_GPUSampler *point;
 static SDL_GPUTexture *texels, *ltabs, *paltex, *color, *depth;
 static SDL_GPUTexture *colours, *fits;  /* the textures in colour (mipmapped), the rows' fits */
@@ -274,7 +297,9 @@ static void forget(void)
     /* the renderer (and with it its device and textures) is gone or new: start again */
     g_r = NULL;
     dev = NULL;
-    pipe = NULL;
+    pipe = wx_pipe = NULL;
+    wx_tex = NULL;
+    port_gl_wx_on = 0;
     point = trilin = NULL;
     texels = ltabs = paltex = color = depth = colours = fits = NULL;
     vbuf = NULL;
@@ -299,6 +324,10 @@ void port_gl_shutdown(void)
             SDL_DestroyTexture(shown);
         if (pipe)
             SDL_ReleaseGPUGraphicsPipeline(dev, pipe);
+        if (wx_pipe)
+            SDL_ReleaseGPUGraphicsPipeline(dev, wx_pipe);
+        if (wx_tex)
+            SDL_ReleaseGPUTexture(dev, wx_tex);
         if (point)
             SDL_ReleaseGPUSampler(dev, point);
         if (trilin)
@@ -422,6 +451,41 @@ static int setup(SDL_Renderer *r)
     pipe = SDL_CreateGPUGraphicsPipeline(dev, &pi);
     SDL_ReleaseGPUShader(dev, vs);
     SDL_ReleaseGPUShader(dev, fs);
+    {   /* the weather: no vertices (made from the instance), blended premultiplied, under the
+         * ground's depth (hills hide it), writing none */
+        SDL_GPUShader *wvs, *wfs;
+        SDL_GPUGraphicsPipelineCreateInfo wi = pi;
+        SDL_GPUColorTargetDescription wct = ct;
+        SDL_zero(si);
+        si.format = SDL_GPU_SHADERFORMAT_DXIL;
+        si.entrypoint = "main";
+        si.code = gpuwx_vert_dxil;
+        si.code_size = gpuwx_vert_dxil_len;
+        si.stage = SDL_GPU_SHADERSTAGE_VERTEX;
+        si.num_uniform_buffers = 1;
+        wvs = SDL_CreateGPUShader(dev, &si);
+        si.code = gpuwx_dxil;
+        si.code_size = gpuwx_dxil_len;
+        si.stage = SDL_GPU_SHADERSTAGE_FRAGMENT;
+        wfs = SDL_CreateGPUShader(dev, &si);
+        wct.blend_state.enable_blend = true;
+        wct.blend_state.src_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE;
+        wct.blend_state.dst_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+        wct.blend_state.color_blend_op = SDL_GPU_BLENDOP_ADD;
+        wct.blend_state.src_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE;
+        wct.blend_state.dst_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+        wct.blend_state.alpha_blend_op = SDL_GPU_BLENDOP_ADD;
+        wi.vertex_shader = wvs;
+        wi.fragment_shader = wfs;
+        SDL_zero(wi.vertex_input_state);
+        wi.depth_stencil_state.enable_depth_write = false;
+        wi.target_info.color_target_descriptions = &wct;
+        wx_pipe = wvs && wfs ? SDL_CreateGPUGraphicsPipeline(dev, &wi) : NULL;
+        if (wvs)
+            SDL_ReleaseGPUShader(dev, wvs);
+        if (wfs)
+            SDL_ReleaseGPUShader(dev, wfs);
+    }
     if (!pipe) {
         port_log("GPU ground: pipeline not made (%s), off\n", SDL_GetError());
         return 0;
@@ -450,8 +514,10 @@ static int setup(SDL_Renderer *r)
         port_log("GPU ground: textures not made (%s), off\n", SDL_GetError());
         return 0;
     }
-    port_log("GPU ground: on (%s, depth %s, texture filter %s)\n", SDL_GetGPUDeviceDriver(dev),
-             depth_fmt == SDL_GPU_TEXTUREFORMAT_D32_FLOAT ? "32-bit float" : "24-bit", filter ? "on" : "off");
+    port_gl_wx_on = wx_pipe != NULL;
+    port_log("GPU rendering: on (%s, depth %s, texture filter %s, weather %s)\n", SDL_GetGPUDeviceDriver(dev),
+             depth_fmt == SDL_GPU_TEXTUREFORMAT_D32_FLOAT ? "32-bit float" : "24-bit", filter ? "on" : "off",
+             wx_pipe ? "on" : "the game's");
     return 1;
 }
 
@@ -468,11 +534,15 @@ static int targets(int W, int H)
         SDL_ReleaseGPUTexture(dev, color);
     if (depth)
         SDL_ReleaseGPUTexture(dev, depth);
+    if (wx_tex)
+        SDL_ReleaseGPUTexture(dev, wx_tex);
     shown = NULL;
     color = make_tex(SDL_GPU_TEXTURETYPE_2D, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
                      SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER, W, H, 1, 1);
     depth = make_tex(SDL_GPU_TEXTURETYPE_2D, depth_fmt, SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET, W, H, 1, 1);
-    if (!color || !depth)
+    wx_tex = make_tex(SDL_GPU_TEXTURETYPE_2D, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
+                      SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER, W, H, 1, 1);
+    if (!color || !depth || !wx_tex)
         return 0;
     p = SDL_CreateProperties();
     SDL_SetNumberProperty(p, SDL_PROP_TEXTURE_CREATE_FORMAT_NUMBER, SDL_PIXELFORMAT_ABGR8888);
@@ -569,6 +639,86 @@ static void make_fit(float *d, const uint8_t *lt, const uint32_t *pal, const dou
         }
     for (r = 0; r < 24; r++)
         d[(r * 2 + 0) * 4 + 3] = d[(r * 2 + 1) * 4 + 3] = 0;
+}
+
+/* the weather (gpuwx shaders): its layer cleared, and the particles drawn into it under the
+ * ground's depth.  A square of the map is about 8 m (a unit 2 m tall stands a quarter of one): the
+ * rain falls at about 9 m a second, the snow at about 1 */
+static void weather_pass(SDL_GPUCommandBuffer *cmd, const Capture *c, const float *cam, const uint32_t *pal)
+{
+    SDL_GPUColorTargetInfo wti;
+    SDL_GPUDepthStencilTargetInfo wdi;
+    SDL_GPURenderPass *wp;
+    int draw = wx_pipe && (c->wx_kind == 0 || c->wx_kind == 1);
+    SDL_zero(wti);
+    wti.texture = wx_tex;
+    wti.load_op = SDL_GPU_LOADOP_CLEAR;
+    wti.store_op = SDL_GPU_STOREOP_STORE;
+    SDL_zero(wdi);
+    wdi.texture = depth;
+    wdi.load_op = SDL_GPU_LOADOP_LOAD;
+    wdi.store_op = SDL_GPU_STOREOP_DONT_CARE;
+    wdi.stencil_load_op = SDL_GPU_LOADOP_DONT_CARE;
+    wdi.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
+    wp = SDL_BeginGPURenderPass(cmd, &wti, 1, draw ? &wdi : NULL);
+    if (draw) {
+        const float *a = c->m;
+        float u[52], f[8], c1 = a[1] * a[1] + a[4] * a[4] + a[7] * a[7];
+        float det = a[0] * (a[4] * a[8] - a[5] * a[7]) - a[1] * (a[3] * a[8] - a[5] * a[6]) +
+                    a[2] * (a[3] * a[7] - a[4] * a[6]);
+        float rx = 0, ry = 0, rl, fall, snow = (float)c->wx_kind;
+        uint32_t col = pal[c->wx_colour & 0xFF];
+        Uint32 n;
+        int i;
+        if (det != 0) {                 /* the view's right on the map (its inverse's first column) */
+            ry = (a[4] * a[8] - a[5] * a[7]) / det;     /* ey */
+            rx = (a[3] * a[7] - a[4] * a[6]) / det;     /* ex */
+        }
+        rl = sqrtf(rx * rx + ry * ry);
+        if (rl > 0) {
+            rx /= rl;
+            ry /= rl;
+        }
+        fall = snow ? 0.13f : 1.6f;
+        memset(u, 0, sizeof u);
+        for (i = 0; i < 4; i++)
+            u[i] = cam[i];
+        u[4] = cam[4];
+        u[5] = cam[5];
+        for (i = 0; i < 3; i++) {
+            u[8 + i] = a[i];
+            u[12 + i] = a[3 + i];
+            u[16 + i] = a[6 + i];
+            u[20 + i] = c->mz[i];
+        }
+        u[24] = c->cam_x;
+        u[25] = c->cam_y;
+        u[26] = c1 > 0 ? -(c->mz[0] * a[1] + c->mz[1] * a[4] + c->mz[2] * a[7]) / c1 : 0;    /* the viewer's height */
+        u[27] = c->wx_time;
+        u[28] = snow;
+        u[29] = snow ? 10.0f : 14.0f;   /* the box across, its height (squares) */
+        u[30] = snow ? 3.0f : 4.0f;
+        u[32] = rx * c->wx_wind * fall; /* the game's drift: across the view */
+        u[33] = ry * c->wx_wind * fall;
+        u[34] = fall;
+        u[35] = 0.12f;                  /* the streak: where the drop was 120 ms ago (the eye's blur) */
+        u[36] = 0.014f;                 /* a flake (squares) */
+        u[37] = 1.3f + c->W / 1200.0f;  /* a streak's width (pixels) */
+        u[38] = (float)c->W;
+        u[39] = (float)c->H;
+        f[0] = (((col >> 16) & 255) / 255.0f) * 0.5f + 0.5f;    /* the game's drop colour, lighter */
+        f[1] = (((col >> 8) & 255) / 255.0f) * 0.5f + 0.5f;
+        f[2] = ((col & 255) / 255.0f) * 0.5f + 0.5f;
+        f[3] = snow ? 1.0f : 0.5f;
+        f[4] = snow;
+        f[5] = f[6] = f[7] = 0;
+        n = (Uint32)((snow ? 14000 : 8000) * c->wx_density);
+        SDL_BindGPUGraphicsPipeline(wp, wx_pipe);
+        SDL_PushGPUVertexUniformData(cmd, 0, u, sizeof u);
+        SDL_PushGPUFragmentUniformData(cmd, 0, f, sizeof f);
+        SDL_DrawGPUPrimitives(wp, 6, n, 0, 0);
+    }
+    SDL_EndGPURenderPass(wp);
 }
 
 SDL_Texture *port_gl_render(SDL_Renderer *r, void *capture, const uint32_t *pal)
@@ -723,12 +873,10 @@ SDL_Texture *port_gl_render(SDL_Renderer *r, void *capture, const uint32_t *pal)
     dti.texture = depth;
     dti.clear_depth = 1.0f;
     dti.load_op = SDL_GPU_LOADOP_CLEAR;
-    dti.store_op = SDL_GPU_STOREOP_DONT_CARE;
+    dti.store_op = SDL_GPU_STOREOP_STORE;   /* (the weather's pass tests against it) */
     dti.stencil_load_op = SDL_GPU_LOADOP_DONT_CARE;
     dti.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
-    rp = SDL_BeginGPURenderPass(cmd, &cti, 1, &dti);
-    if (vbytes) {
-        /* the game's projection, sx = hw * (x / z + 1) on a canvas W wide (sy alike, down), as
+    {   /* the game's projection, sx = hw * (x / z + 1) on a canvas W wide (sy alike, down), as
          * clip coordinates over w = z */
         float ax = 2 * c->hw / c->W, ay = 2 * c->hh / c->H;
         cam[0] = ax;
@@ -738,6 +886,9 @@ SDL_Texture *port_gl_render(SDL_Renderer *r, void *capture, const uint32_t *pal)
         cam[4] = FAR_Z / (FAR_Z - NEAR_Z);
         cam[5] = -NEAR_Z * FAR_Z / (FAR_Z - NEAR_Z);
         cam[6] = cam[7] = 0;
+    }
+    rp = SDL_BeginGPURenderPass(cmd, &cti, 1, &dti);
+    if (vbytes) {
         memset(look, 0, sizeof look);
         look[0] = (float)filter;
         if (c->fog) {                   /* the fog: start, end, its colour; the view's inverse */
@@ -787,6 +938,7 @@ SDL_Texture *port_gl_render(SDL_Renderer *r, void *capture, const uint32_t *pal)
         SDL_DrawGPUPrimitives(rp, (Uint32)c->nv, 1, 0, 0);
     }
     SDL_EndGPURenderPass(rp);
+    weather_pass(cmd, c, cam, pal);
     if (!SDL_SubmitGPUCommandBuffer(cmd))
         return NULL;
     {
@@ -811,7 +963,7 @@ const uint8_t *port_gl_mask(void *capture, int row)
 SDL_GPURenderState *port_gl_state(SDL_Renderer *r, float sx, float sy, float oy, float a)
 {
     float map[4];
-    if (!port_gl || broken || r != g_r || !color)
+    if (!port_gl || broken || r != g_r || !color || !wx_tex)
         return NULL;
     if (mix && mix_for != color) {      /* a new picture size: made again with the new target */
         SDL_DestroyGPURenderState(mix);
@@ -819,7 +971,7 @@ SDL_GPURenderState *port_gl_state(SDL_Renderer *r, float sx, float sy, float oy,
     }
     if (!mix) {
         SDL_GPURenderStateCreateInfo ri;
-        SDL_GPUTextureSamplerBinding sb;
+        SDL_GPUTextureSamplerBinding sb[2];
         if (!mix_sh) {
             SDL_GPUShaderCreateInfo si;
             SDL_zero(si);
@@ -828,7 +980,7 @@ SDL_GPURenderState *port_gl_state(SDL_Renderer *r, float sx, float sy, float oy,
             si.code = gpuland_mix_dxil;
             si.code_size = gpuland_mix_dxil_len;
             si.stage = SDL_GPU_SHADERSTAGE_FRAGMENT;
-            si.num_samplers = 2;
+            si.num_samplers = 3;
             si.num_uniform_buffers = 1;
             mix_sh = SDL_CreateGPUShader(dev, &si);
             if (!mix_sh) {
@@ -837,12 +989,14 @@ SDL_GPURenderState *port_gl_state(SDL_Renderer *r, float sx, float sy, float oy,
                 return NULL;
             }
         }
-        sb.texture = color;
-        sb.sampler = point;
+        sb[0].texture = color;
+        sb[0].sampler = point;
+        sb[1].texture = wx_tex;
+        sb[1].sampler = point;
         SDL_zero(ri);
         ri.fragment_shader = mix_sh;
-        ri.num_sampler_bindings = 1;
-        ri.sampler_bindings = &sb;
+        ri.num_sampler_bindings = 2;
+        ri.sampler_bindings = sb;
         mix = SDL_CreateGPURenderState(r, &ri);
         if (!mix) {
             port_log("GPU ground: the mixing state not made (%s), off\n", SDL_GetError());

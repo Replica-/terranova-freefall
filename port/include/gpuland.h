@@ -36,6 +36,12 @@ void port_gl_far(void);
  * and offset, and its fog (start, end in squares, its colour; fog 0: none) for each pixel */
 void port_gl_view(const float m[9], const float mz[3], int fog, float start, float end, int colour);
 
+/* ... and its weather (kind -1 none, 0 rain, 1 snow; the game's drop colour, how many drops
+ * (1 the game's usual), the drift across the view a step of the fall, the time in seconds, the
+ * viewer on the map), which the card draws in place of the game's drops */
+void port_gl_weather(int kind, int colour, float density, float wind, float time, float cam_x, float cam_y);
+extern int port_gl_wx_on;              /* the card draws the weather (sharp3d.c leaves the drops out) */
+
 /* the game's thread (weather.c): a terrain polygon of n points, textured (tex: 64 x 64 colour
  * numbers) or flat (tex NULL, colour), through the light table ltab (24 x 256; NULL: unlit) */
 void port_gl_poly(const PortGlVert *v, int n, const uint8_t *tex, int colour, const uint8_t *ltab);

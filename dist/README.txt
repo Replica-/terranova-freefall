@@ -255,13 +255,15 @@ An option that needs another one shows grey until that one is on.
                         resolution 2x, 4x or 6x and Direct3D 12 or Vulkan;
                         the HUD, text, maps and the target's label stay
                         crisp).
-    GPU ground          Off or On (experimental): the ground of the main 3D
-                        view, near and far, drawn by the graphics card, in
-                        full colour and perspective-correct, so its
-                        textures no longer swim as you move, with the fog
-                        worked out for every pixel; the sky, objects and
-                        water are still the game's.  Needs Direct3D 12.
-                        Not part of the presets.
+    GPU rendering       Off or On (experimental): the graphics card draws
+                        the main 3D view's ground, near and far, in full
+                        colour and perspective-correct (its textures no
+                        longer swim as you move), the fog for every pixel,
+                        and the rain and snow as particles in the world
+                        around you.  Always in full colour (True colour
+                        On).  The sky, objects and water are still the
+                        game's.  Needs Direct3D 12.  Not part of the
+                        presets.
     Filters             (the right column) Screen filters, only how the
                         picture looks:
                           Brightness, Gamma, Contrast, Colour

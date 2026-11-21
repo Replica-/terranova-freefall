@@ -1065,7 +1065,7 @@ static void ck_rows(void *arg, int part, int thread)
         const uint8_t *hi = f->high + (ptrdiff_t)Yv * hw;
         const uint8_t *hud = f->hud ? f->hud + (size_t)ly * (hw / kx) : NULL;
         const uint8_t *hm = f->hudm ? f->hudm + (size_t)ly * f->w : NULL;
-        const uint32_t *p3 = s3d_aa && !f->map ? disp3d : disp32;     /* the 3D's colours */
+        const uint32_t *p3 = (s3d_aa || port_gl) && !f->map ? disp3d : disp32;     /* the 3D's colours */
         const uint32_t *tc = f->tc && f->tc_rows[Yv] && !rw->ir ? f->tc + (ptrdiff_t)Yv * hw : NULL;
         const uint8_t *gm = rw->glm ? rw->glm + (ptrdiff_t)Yv * hw : NULL;  /* the GPU ground (gpuland.c) */
         uint32_t a3 = p3[0] & 0xFF000000u;
@@ -1192,7 +1192,7 @@ static void ck_rows_one(void *arg, int part, int thread)
         const uint8_t *hi = f->high + (ptrdiff_t)Yv * hw;
         const uint8_t *hud = f->hud ? f->hud + (size_t)ly * (hw / kx) : NULL;
         const uint8_t *hm = f->hudm ? f->hudm + (size_t)ly * f->w : NULL;
-        const uint32_t *p3 = s3d_aa && !f->map ? disp3d : disp32;     /* the 3D's colours */
+        const uint32_t *p3 = (s3d_aa || port_gl) && !f->map ? disp3d : disp32;     /* the 3D's colours */
         const uint32_t *tc = f->tc && f->tc_rows[Yv] && !rw->ir ? f->tc + (ptrdiff_t)Yv * hw : NULL;
         const uint8_t *gm = rw->glm ? rw->glm + (ptrdiff_t)Yv * hw : NULL;  /* the GPU ground (gpuland.c) */
         uint32_t a3 = p3[0] & 0xFF000000u;
@@ -2264,7 +2264,7 @@ static void s3d_rows(void *arg, int part, int thread)
         const uint8_t *low = f->low + (size_t)ly * f->w;
         const uint8_t *hm = f->hudm ? f->hudm + (size_t)ly * f->w : NULL;     /* HUD pictures */
         const uint8_t *hi = f->high + (size_t)Y * hw;
-        const uint32_t *p3 = s3d_aa && !f->map ? disp3d : disp32;     /* the 3D's colours */
+        const uint32_t *p3 = (s3d_aa || port_gl) && !f->map ? disp3d : disp32;     /* the 3D's colours */
         const uint32_t *tc = f->tc && f->tc_rows[Y] && !rw->ir ? f->tc + (size_t)Y * hw : NULL;
         uint32_t a3 = p3[0] & 0xFF000000u;
         uint32_t *d = (uint32_t *)((uint8_t *)pixels + (size_t)Y * tpitch), *d0 = d;

@@ -820,7 +820,7 @@ static const Page pages[PG_KEYS] = {
           { G_BUTTONS, SRC_SCR, S_WIDE, 0, "Widescreen", ONOFF },
           { G_BUTTONS, SRC_SCR, S_SCALE, 0, "Scaling", "Fit|Sharp" },
           { G_BUTTONS, SRC_SCR, S_AA, 0, "Anti-aliasing", "Off|FXAA" },
-          { G_BUTTONS, SRC_SCR, S_GPULAND, 0, "GPU ground (experimental)", ONOFF }, { G_PANEL }, { G_PREVIEW }, { G_END } },
+          { G_BUTTONS, SRC_SCR, S_GPULAND, 0, "GPU rendering (experimental)", ONOFF }, { G_PANEL }, { G_PREVIEW }, { G_END } },
         { { G_SLIDER, SRC_SCR, S_BRIGHT, 0, "Brightness" },
           { G_SLIDER, SRC_SCR, S_GAMMA, 0, "Gamma" },
           { G_SLIDER, SRC_SCR, S_CONTRAST, 0, "Contrast" },

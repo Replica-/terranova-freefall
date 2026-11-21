@@ -156,8 +156,12 @@ void port_screen_load(void (*get)(const char *key, char *out, int size))
     get("screen_truecolour", v, sizeof v);
     port_truecol = !SDL_strcasecmp(v, "glow") ? 2 : !SDL_strcasecmp(v, "on");
     v[0] = 0;
-    get("screen_gpu_ground", v, sizeof v);     /* gpuland.c (FREEFALL_GPU_LAND overrides it) */
-    port_gl = !SDL_strcasecmp(v, "on");
+    get("screen_renderer", v, sizeof v);       /* "GPU rendering": gpuland.c (FREEFALL_GPU_LAND overrides it) */
+    port_gl = !SDL_strcasecmp(v, "gpu");
+    v[0] = 0;
+    get("screen_gpu_ground", v, sizeof v);     /* (its first name) */
+    if (!SDL_strcasecmp(v, "on"))
+        port_gl = 1;
     v[0] = 0;
     get("screen_map", v, sizeof v);             /* "smooth" and "soft": earlier test builds' */
     port_map_smooth = !SDL_strcasecmp(v, "on") || !SDL_strcasecmp(v, "smooth") || !SDL_strcasecmp(v, "soft");
@@ -230,7 +234,7 @@ void port_screen_save(FILE *f)
     if (port_truecol)
         fprintf(f, "screen_truecolour=%s\n", port_truecol == 2 ? "glow" : "on");
     if (port_gl)
-        fprintf(f, "screen_gpu_ground=on\n");
+        fprintf(f, "screen_renderer=gpu\n");
     if (port_water_full)
         fprintf(f, "screen_water=%s\n", port_water_full == 2 ? "high" : "medium");
     if (port_water_ripples)
@@ -614,7 +618,7 @@ static const char *labels[S_COUNT] = {
     "3D resolution", "Widescreen", "Anti-aliasing", "Fog", "True colour", "Map smoothing", "Effects mod", "Objects mod",
     "Cockpit mod", "Dynamic helmet", "Arms mod", "Infrared", "Scaling", "Smooth videos", "Movie size",
     "Terrain distance", "Terrain smoothing", "Water reflection", "Water ripples", "Water effects",
-    "Object distance", "Enemy distance", "Tree size", "Tree explosion", "GPU ground",
+    "Object distance", "Enemy distance", "Tree size", "Tree explosion", "GPU rendering",
     "Brightness", "Gamma", "Contrast", "Colour", "Scanlines", "Effect",
     "Switch all filters off",
 };
@@ -773,7 +777,7 @@ const char *port_screen_help_v(int i, int v)
     case S_GPULAND:
         if (v && gpu_unavailable)
             return "Needs Direct3D 12";
-        return v ? "Ground drawn by the graphics card: no swimming textures" : "Off: the ground as the game draws it";
+        return v ? "The graphics card draws the world, full colour (more to come)" : "Off: the game's own drawing";
     case S_INFRARED:
         return v ? "Real thermal camera vision" : "Classic: the game's infrared colours";
     case S_SCALE:

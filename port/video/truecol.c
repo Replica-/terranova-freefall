@@ -35,8 +35,15 @@ void free(void *p);
 #include "port.h"
 #include "platform.h"
 #include "sharp3d.h"
+#include "gpuland.h"
 
 int port_truecol;                       /* 0 Off, 1 On, 2 On + sun glow (screen.c) */
+
+/* the True colour in use: GPU rendering (gpuland.c) has no palette, so it is On there at least */
+int port_tc_mode(void)
+{
+    return port_truecol ? port_truecol : port_gl ? 1 : 0;
+}
 int port_tc_on;                         /* this drawing is noted: 1, 2 with the glow */
 uchar *port_tc_base;
 ulong *port_tc_info;
@@ -106,7 +113,7 @@ void port_tc_begin(int idx, uchar *high, int W, int H)
     port_tc_on = 0;
     cur = NULL;
     glow_on = 0;
-    if (!port_truecol || game_35ADE0 == 2 || idx < 0 || idx > 2 || W <= 0 || W > TC_COLS || H <= 0 || H > TC_ROWS)
+    if (!port_tc_mode() || game_35ADE0 == 2 || idx < 0 || idx > 2 || W <= 0 || W > TC_COLS || H <= 0 || H > TC_ROWS)
         return;
     if (plane_n[idx] < n) {
         plane_free(plane[idx], plane_n[idx] * sizeof(ulong));
@@ -134,7 +141,7 @@ void port_tc_begin(int idx, uchar *high, int W, int H)
     port_tc_base = high;
     port_tc_info = cur;
     port_tc_n = (ulong)n;
-    port_tc_on = port_truecol;
+    port_tc_on = port_tc_mode();
 }
 
 void port_tc_sun(int ok, long a, long b, long elev, long horizon, long half_w, long half_h, long zx, long zy)

@@ -58,7 +58,7 @@ int port_s3d_wanted(void)
 {
     return port_sharp3d || port_widescreen || port_terrain || port_far_smooth || port_water_full || port_fog ||
            port_obj_dist || port_enemy_dist || port_fx_pack[0] || port_obj_pack[0] || port_tree_size || port_ir_style ||
-           port_truecol || port_burn || port_arms_pack[0];
+           port_tc_mode() || port_burn || port_arms_pack[0] || port_gl;
 }
 
 /* the shell's back picture, which it draws and then copies to the screen (menuwide.c: the main
@@ -905,7 +905,7 @@ void port_s3d_render(int slot, void *pview, void *pcam, int mirror)
         port_map_cone_wide = (fix)(((long long)(w + 2 * e) << 16) / w);
     if (kx < 2 && ky < 2 && !e && (slot || !(port_terrain || port_far_smooth || port_fog || port_obj_dist || port_enemy_dist ||
                                              port_fx_pack[0] || port_obj_pack[0] || port_tree_size || port_ir_on() ||
-                                             port_truecol || port_arms_pack[0])))
+                                             port_tc_mode() || port_gl || port_arms_pack[0])))
         return;
     W = (w + 2 * e) * kx;
     if (W > MAX_COLS || h * ky > MAX_ROWS || w * h > (int)sizeof frame_low[0][0])
@@ -1441,6 +1441,8 @@ static void drop_at(long c, const void *pbm, long x16, long y16)
 
 void port_s3d_drop(long c, const void *pbm, long x16, long y16)
 {
+    if (port_gl_wx_on && port_gl_capturing)
+        return;                         /* GPU rendering draws the weather (gpuland.c) */
     if (port_s3d_ex) {
         long d = (long)port_s3d_low_w << 4;
         drop_at(c, pbm, x16 - d, y16);

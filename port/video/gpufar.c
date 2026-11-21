@@ -22,6 +22,7 @@
 extern ushort port_poly_have[PF_W][PF_W], port_poly_gen;   /* terrstrp.c: squares with polygons */
 int port_hz_water(uchar *c);                                /* haze.c */
 int port_fog_gpu(float *start, float *end, int *colour);    /* fog.c */
+extern unsigned long tn_ticks;                              /* the game's 250 Hz clock */
 
 #define NEAR_Z 0.05f
 #define SIDE 1.15f                      /* x / z and y / z past the view's edge still kept */
@@ -53,9 +54,7 @@ void port_gl_far(void)
     float fog_s = 0, fog_e = 1;
     static long haze_r[512];
 
-    if (!port_gl || ff_cam.g_5c != 1 && ff_cam.g_5c != 2)  /* (textured only, as the near ground) */
-        return;
-    if (grd_canvas->gc.fill_type)       /* the infrared: the game's */
+    if (!port_gl)
         return;
     for (i = 0; i < 512; i++)
         haze_r[i] = -1;
@@ -68,6 +67,22 @@ void port_gl_far(void)
     /* the view and the fog, for the card to fog each pixel by its distance on the map */
     gpu_fog = port_fog_gpu(&fog_s, &fog_e, &fog_c);
     port_gl_view(M, mz, gpu_fog, fog_s, fog_e, fog_c);
+    if (!grd_canvas->gc.fill_type && (game_35CADA == 0 || game_35CADA == 1)) {
+        /* the weather (weather.c: rain 0, snow 1; not in the infrared, as the game's drops): its
+         * drop colour, how many drops the views have against the usual, its drift across the
+         * view against its fall */
+        const WxType *t = &wx_types[game_35CADA];
+        long most = 0, fy = t->dy0 + t->dy1;
+        for (i = 0; i < 4; i++)
+            if (wx_views[i].drops && wx_views[i].drops != (WxDrop *)-1 && wx_views[i].count > most)
+                most = wx_views[i].count;
+        port_gl_weather(game_35CADA, t->color, most > 0 ? (most < 60 ? 0.5f : most > 400 ? 2.0f : most / 200.0f) : 1.0f,
+                        fy ? (float)(t->dx0 + t->dx1) / fy : 0.0f, tn_ticks / 250.0f, vx, vy);
+    }
+    if (ff_cam.g_5c != 1 && ff_cam.g_5c != 2)  /* (the ground textured only, as the near ground) */
+        return;
+    if (grd_canvas->gc.fill_type)       /* the infrared: the game's */
+        return;
 
     /* k = band0 - 1: the rings nearer than the column bands, square by square where the near
      * ground has no polygons (the caster draws those: the polygons' cone leaves squares out) */
